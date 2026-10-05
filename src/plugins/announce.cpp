@@ -1547,7 +1547,7 @@ const PluginSetting kSettings[] = {
     // back on when that differs (1.2.2, publicPort).
     { "public_port",    "Outside",   PS_OPTNUM, 1, 65535, 5,
       "What callers dial through your router.", nullptr, "Outside port",
-      "The router's outside port, when it differs. Blank follows the board or the mapping." },
+      "The router's outside port, if it differs. Blank: the board's, or a mapping." },
     // Comma separated, so one board can be listed in several directories.
     { "servers",        "Directory", PS_TEXT,  0, 0,     90,          nullptr, nullptr, "Directory URLs" },
     { "interval",       "Every min", PS_NUM,   1, 1440,  4,           nullptr, nullptr, "Heartbeat minutes" },

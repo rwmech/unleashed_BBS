@@ -1,6 +1,11 @@
 # Per-test wall time in seconds, the worse of the runs it was
 # measured from. tools/testtimes.py --save writes it and
 # tools/parallel.py packs harness.sh --jobs lanes by it.
+#
+# --save REWRITES this file from the one out.txt it is given, which is
+# right after a FULL run and wrong after an --only one: it threw away
+# 180 figures when the portmap group's 18 were added that way (1.2.2).
+# After a targeted run, merge the run's TIME lines in instead.
 test_about 4.4
 test_accounts 43.5
 test_accounts_form_notes 6.2
@@ -128,6 +133,23 @@ test_page 9.6
 test_partitions 5.2
 test_petscii 7.7
 test_plugins 10.9
+test_portmap_carrier 13.7
+test_portmap_deaf 20.1
+test_portmap_natpmp 13.4
+test_portmap_no_lag 30.8
+test_portmap_noaddr 17.4
+test_portmap_now 12.6
+test_portmap_off 14.6
+test_portmap_otherport 12.5
+test_portmap_pcp 11.6
+test_portmap_reboot 10.3
+test_portmap_refused 11.6
+test_portmap_renew 21.6
+test_portmap_rows 19.1
+test_portmap_rows_narrow 11.9
+test_portmap_stranger 19.6
+test_portmap_toggle 19.4
+test_portmap_unsupp 11.6
 test_privacy 22.0
 test_prompt_survives_notice 12.5
 test_refresh_and_ctrl_l 11.8

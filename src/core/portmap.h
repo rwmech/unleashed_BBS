@@ -111,15 +111,20 @@
 //               local. **Both fit**: the WROOM image is at 81% of its slot
 //               and the ESP32-CAM, which is the DRAM floor, has a couple of
 //               kilobytes free (the measured figure lives in CLAUDE.md's
-//               1.2.2-portmap.1 entry and nowhere else, so there is one
+//               1.2.2-portmap.2 entry and nowhere else, so there is one
 //               copy of it to keep current). So the
 //               reason to stop is NOT size, and saying it was would have
 //               been a lie: it is three stacked protocols with real vendor
 //               divergence, that is where the days go, and there is no
-//               router here to shake it out against. Rob's call, with the
-//               figures in CLAUDE.md's 1.2.2-portmap.1 entry. The shape
-//               here is ready: Proto gains a value and the probe tries it
-//               third.
+//               router here to shake it out against.
+//
+//               **Rob's decision, 2026-10-05: not now, for that reason and
+//               not for flash.** NAT-PMP and PCP cover the Apple-lineage
+//               gear and a good deal of consumer kit, and this is revisited
+//               when there is a real router to shake it out against. The
+//               shape here is ready for it: Proto gains a value and the
+//               probe tries it third, after NAT-PMP. The figures are in
+//               CLAUDE.md's 1.2.2-portmap.2 entry.
 //
 // Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build,
 //               where BBS_HOST_GATEWAY points it at a fake router on

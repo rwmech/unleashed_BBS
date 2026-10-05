@@ -115,6 +115,10 @@
 #                   shell      menus, sysinfo, config    (the core's screens)
 #                   login      accounts, guest, sysop    (getting in)
 #                   terminal   ansi, petscii, ascii      (the three flavours)
+#                   portmap    the router asked to forward (1.2.2); each
+#                              test runs tools/fake_router.py and a board
+#                              copy pointed at it, so none of them touches
+#                              this board
 #
 #                 tools/harness.sh --tag m --card --only=messaging
 #                 tools/harness.sh --tag m --card --only=forums,sysinfo

@@ -1067,18 +1067,30 @@ const CfgField kNetwork[] = {
     // the protocols: a sysop looking for the matching router setting finds
     // it under "UPnP" far more often than under NAT-PMP, which is what the
     // failure line says when a router refuses.
+    // "Have router forward" is 19 characters, because Form::labelWidth is
+    // 20 at 80 columns and drawField pads AND CUTS to it. "Ask router to
+    // forward" was 21 and came out as "Ask router to forwar", which the
+    // host test found and three code-review passes did not. Same shape as
+    // the co-sysop rows losing their digit to the 9-character column.
     { "port_map",       "Port map", CK_YESNO, 0, 0, 4, "Yes: ask your router to forward them.",
-      "Ask router to forward",
-      "Yes: the board asks your router to forward its ports, so you open no router menu." },
+      "Have router forward",
+      "Yes: the board asks your router to forward its ports; you open no menu." },
     // What came of it, read only, with an "as of". Not "reachable": the
     // router granting a mapping proves it did as it was asked, not that a
     // packet from outside arrives, and nothing on the board can test that.
+    // Every string on these two rows is measured against the column that
+    // draws it, because NOTHING in the build is: Form::labelWidth is 20 at
+    // 80 columns and 9 at 40 and drawField CUTS to it, and Form::statusW is
+    // 78 and 38 and the status line cuts too. Four of the six strings here
+    // were over when first written and only one of them had a test, which
+    // is how "Ask router to forward" shipped as "Ask router to forwar".
+    //
     // 55 is the form's box at 80 columns (Form::boxW), and a longer value
     // scrolls to its TAIL, which on a row nothing can focus would show the
     // end of a sentence and not the start. portmap::line is built to fit.
-    { "port_map_state", "Mapped",   CK_INFO,  0, 0, 55, "PORTMAP says more. PORTMAP NOW retries.",
+    { "port_map_state", "Mapped",   CK_INFO,  0, 0, 55, "PORTMAP says more; NOW asks again.",
       "What the router did",
-      "What the router granted, and when it was asked. PORTMAP says more; PORTMAP NOW asks again." },
+      "What the router granted, and when it answered. PORTMAP says more." },
 };
 
 // CONFIG photos (1.2.0; CONFIG cameras until Rob's naming of 2026-09-28,

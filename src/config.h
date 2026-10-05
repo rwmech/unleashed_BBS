@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.2.2-portmap.1"
+#define BBS_VERSION         "1.2.2-portmap.2"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -469,6 +469,8 @@
 // reruns, against taking the busy line off a full board for a socket that
 // exists about two seconds an hour. The overlap needs a full board AND an
 // open backup window AND an in-flight heartbeat, so the trade is the right
-// way round; it is not a guarantee.
+// way round; it is not a guarantee. **Rob declined raising it to 4
+// (2026-10-05)**: a known, documented, narrow race beats an undocumented
+// one, and the busy line is worth more than the margin.
 #define BBS_SOCK_RESERVE        3
 #endif

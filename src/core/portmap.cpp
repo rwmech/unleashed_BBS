@@ -771,7 +771,22 @@ void service(uint32_t now) {
                 return;
             }
             g_extAsked = true;
-            if (anyHeld()) g_why = privateAddr(g_ext) ? Why::Carrier : Why::Ok;
+            if (anyHeld()) {
+                g_why = privateAddr(g_ext) ? Why::Carrier : Why::Ok;
+                // Said on the console here as well as on PORTMAP and SYS.
+                // On NAT-PMP the mapping is granted BEFORE the address is
+                // known, so granted()'s own line cannot carry the verdict,
+                // and without this the carrier finding reached every screen
+                // except the one a sysop reads over the serial port — on
+                // the protocol where it matters most (found by the host
+                // test, not by the code reviews).
+                if (g_why == Why::Carrier) {
+                    char a[16];
+                    addrText(g_ext, a, sizeof(a));
+                    plat::log("portmap: the router's outside address is %s, which is NOT on "
+                              "the internet: callers cannot reach it", a);
+                }
+            }
             waitFor(now, 0);
             return;
         }

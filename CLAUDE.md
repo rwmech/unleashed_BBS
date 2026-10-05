@@ -1981,7 +1981,7 @@ this tree.
       not a thing to do on somebody's say-so.
   - **Rob's decisions on the study, 2026-10-05:**
     - **Port mapping goes ahead of the broker, and it is BUILT**
-      (1.2.2-portmap.1, the entry below): no component in the middle at all,
+      (1.2.2-portmap.2, the entry below): no component in the middle at all,
       and **the only item on the list that helps the base ESP32**, which is
       why it outranks a broker on both of his words. It does nothing under
       CGNAT and that is accepted; what it does do, which was not the reason
@@ -1998,11 +1998,12 @@ this tree.
     listing; and whether SyncTERM speaks SOCKS, which the study could not
     establish either way and which one download settles.
 - **1.2.2: the board asks the router to forward its own port. BUILT
-  (1.2.2-portmap.1, 2026-10-05), code-reviewed twice, NOT tested.** Phase C
+  (1.2.2-portmap.2, 2026-10-05), code-reviewed three times and host-tested
+  on Rob's go.** Phase C
   of internal/study-broker-sat-2026-10-05.md. `src/core/portmap.*`,
   `port_map` on CONFIG network (off as shipped, live), a read-only "What the
   router did" row under it, `PORTMAP` and `PORTMAP NOW`, and a `Port map`
-  line on SYS. CHANGELOG 1.2.2-portmap.1 has what a sysop sees. What it
+  line on SYS. CHANGELOG 1.2.2-portmap.2 has what a sysop sees. What it
   settled:
   - **PCP (RFC 6887) and NAT-PMP (RFC 6886) are built; UPnP IGD is priced
     and not.** The arithmetic, since "priced, not skipped" is worthless
@@ -2021,7 +2022,10 @@ this tree.
     shake it out against. miniupnpc is BSD-3-Clause (checked, not recalled),
     so it would combine cleanly with GPLv3 if vendoring ever beats writing
     it. The shape is ready: `Proto` gains a value and the probe tries it
-    third. **Rob's call, not a size refusal.**
+    third. **Rob's decision, 2026-10-05: not now, and he took that reason
+    rather than a size excuse.** NAT-PMP and PCP cover the Apple-lineage
+    gear and a good deal of consumer kit; it is revisited when there is a
+    real router to shake it out against.
   - **The version byte is the whole protocol negotiation.** Both share UDP
     5351, and RFC 6887 section 9 says a reply carrying version 0 "means this
     is a NAT-PMP server". Many NAT-PMP-only gateways just drop a version
@@ -2099,9 +2103,11 @@ this tree.
     flag set on an ATTEMPT rather than on an ANSWER turns a storm into a
     never (the same fix, the other way: `g_extAsked` set before the send
     meant one lost datagram restored the first bug permanently).
-  - **Still owed, and Rob's:** the measured availability figure. The board
-    records which protocol answered, so **the announce field is one line
-    when he says yes**; nothing is sent today. The smallest honest shape is
+  - **The measured availability figure: NOT sent (Rob, 2026-10-05, no).**
+    The board goes on recording which protocol answered, because that is
+    what `PORTMAP` shows a sysop and it costs nothing, and **no announce
+    field is added**. If he ever wants the figure it is about a day: the
+    smallest honest shape is
     one optional string, `port_map` = `pcp` | `natpmp` | `none`, only while
     the setting is on, carrying no address and nothing identifying, with the
     directory publishing only the aggregate. About 18 bytes against
@@ -2115,8 +2121,85 @@ this tree.
     and a single switch made "NAT-PMP plus a carrier address", where the
     first HIGH lived, inexpressible. `BBS_HOST_GATEWAY=127.0.0.1:<port>`
     points the host build at it, and unset means no default route and
-    nothing sent, so no lane can spray UDP at a real router. Written and
-    **not run**: the test plan needs Rob's OK.
+    nothing sent, so no lane can spray UDP at a real router.
+  - **Eighteen tests, `--only=portmap`, 96 checks, run on Rob's go
+    (2026-10-05) and green.** Each runs its own router and its own copy of
+    the board. **Two are proved against the bug they exist for**, which is
+    the discipline this project has repeatedly shipped without, and both
+    took arranging:
+    - **the carrier verdict is tested over NAT-PMP, not PCP.** PCP's reply
+      carries the outside address for free, so the same assertion passes on
+      the broken code there: on one build with the first HIGH put back,
+      `test_portmap_pcp` PASSED and `test_portmap_carrier` failed six
+      checks. **A test of a protocol-specific bug has to be written in the
+      protocol that has it**, and which one that is was not obvious from
+      the symptom.
+    - **the give-back needed a router that goes deaf while still counting**
+      (`--fault godeaf`). The first version used a healthy router, where
+      the delete succeeds and the loop never manifests, so it passed on the
+      bug. Killing the router process cannot stand in for it either: a dead
+      process logs nothing, the count stops either way, and the check
+      passes on the bug a second time. **"Nothing happened" and "nothing
+      could be observed" look identical from a test, and only the oracle
+      can tell them apart.**
+  - **The run found three bugs that three code-review passes had not**, all
+    of a shape a reviewer cannot see because all of them need the thing
+    drawn:
+    - **an 80-column CONFIG label was silently cut.** `Form::labelWidth` is
+      20 at 80 columns and `drawField` pads AND CUTS to it, and "Ask router
+      to forward" is 21, so it drew as "Ask router to forwar". It is "Have
+      router forward" (19) now. This is the SECOND time a label has been
+      cut by its column (the co-sysop rows lost their digit to the
+      nine-character one), and **nothing checks a `CfgField`'s wide label
+      against `labelWidth` at build time**. A `static_assert` over the
+      tables, or one host test that walks every core page and compares each
+      label's length with the column, would end the class; worth doing in
+      the next build that touches CONFIG.
+    - **the carrier verdict never reached the console on NAT-PMP**, which
+      is the protocol it matters most on. There the mapping is granted
+      before the address is known, so `granted()`'s own log line cannot
+      carry the verdict, and the finding reached PORTMAP, SYS and CONFIG
+      but not the one surface a sysop reads over the serial port. The
+      general shape, and this project's third instance of it: **a fact
+      assembled from two replies is announced by whichever one arrives
+      last, and if only the first announces, the fact is silently
+      half-reported.**
+    - **four of the six new CONFIG notes overran their status line.**
+      `Form::statusW` is 78 at 80 columns and 38 at 40 and the status line
+      CUTS, exactly as `labelWidth` does. One of the four was caught by an
+      existing test (announce's Outside note) and the other three only by
+      measuring every string against the column that draws it. **The label
+      and the notes went wrong in the same change for the same reason:
+      nothing in the build measures either**, so a `static_assert` over the
+      tables, or one host test that walks every core page and compares each
+      label and note with its column, would end a class that has now cost
+      three separate findings. Worth doing in the next build that touches
+      CONFIG.
+  - **A latent test fragility the new SYS row exposed, and the fix is
+    shared.** `sys_silent` and `board_clock` matched `\nLabel +value` in
+    `plain()`, which assumes a row always starts a line in the byte stream.
+    It does not: the pager erases its `[More] Y/n/c` prompt and draws the
+    NEXT row on that same line, so the first row after a page break arrives
+    as `[More] Y/n/c Silent             off` and `\nSilent` cannot match.
+    `plain()` strips escapes, so the erase is invisible to it. Which row is
+    affected depends only on where the page break falls, so both helpers
+    read correctly for a year and then failed the day a row was added above
+    them, for a reason that had nothing to do with silent mode or the clock
+    — nine failures in `test_config_silent` pointing at the wrong feature
+    entirely. They go through one `sys_row` helper on `render_lines` now,
+    which is what CLAUDE.md already said to use for anything about layout
+    or erasing. **Any future SYS row would have tripped this.**
+  - **And the diagnosis was nearly reported wrong, which is the more
+    useful lesson.** The first experiment made the new row `return false`
+    to take it out, the test still failed, and that looked like proof the
+    failure was pre-existing. It was not proof of anything: `rowSys`
+    returning false ENDS the paged list, so SYS stopped at that row and
+    every later row was missing for a quite different reason. Removing the
+    row properly (and renumbering the rest back) made the test pass, which
+    is the opposite conclusion. **An experiment that disables a thing has
+    to disable only that thing**, and in a dispatcher where the return
+    value is also control flow, "make it do nothing" and "take it out" are
+    different edits.
   - **Sizes, off the ELF, against the branch point.** WROOM 165,792
     (+104, 14,944 free), **ESP32-CAM 178,192 (+96, 2,544 free, the floor)**,
     LCD-1.47 263,296 (+136, 78,464), ETH 266,640 (+120, 75,120). Images

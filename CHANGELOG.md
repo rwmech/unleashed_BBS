@@ -24,7 +24,7 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
-## 1.2.2-portmap.1, 2026-10-05
+## 1.2.2-portmap.2, 2026-10-05
 
 **The board asks the router to forward its own ports**, so a sysop opens no
 router menu. Phase C of `internal/study-broker-sat-2026-10-05.md`, built
@@ -34,7 +34,7 @@ with SSH. Built on every board and code-reviewed; **not tested**.
 
 What a sysop sees:
 
-- **`CONFIG network` gains "Ask router to forward"** (`Port map` at 40
+- **`CONFIG network` gains "Have router forward"** (`Port map` at 40
   columns), off as shipped, and a read-only **"What the router did"** row
   under it (`Mapped`). The setting is live: saving it acts at once and asks
   the router there and then, so somebody who has just switched UPnP on in
@@ -134,21 +134,58 @@ Worth keeping, for whoever touches this next:
   probe tries it third.
 - **`tools/fake_router.py`** is a stand-in router written from the RFCs and
   sharing nothing with the firmware, with `--proto` (pcp, natpmp, unsupp,
-  deaf) separate from `--fault` (refuse, busy, carrier, noaddr, otherport,
-  reboot, short) because the interesting cases are combinations.
-  `BBS_HOST_GATEWAY=127.0.0.1:<port>` points the host build at it, and with
-  it unset the board has no default route and sends nothing, so no test lane
-  can spray UDP at a real router. Written, syntax-checked and **not run**.
+  unsupp2, deaf) separate from `--fault` (refuse, busy, carrier, noaddr,
+  otherport, reboot, short, godeaf) because the interesting cases are
+  combinations. `BBS_HOST_GATEWAY=127.0.0.1:<port>` points the host build at
+  it, and with it unset the board has no default route and sends nothing, so
+  no test lane can spray UDP at a real router.
+- **Eighteen host tests, `--only=portmap`, 96 checks** (Rob's go,
+  2026-10-05). Each runs its own stand-in router and its own copy of the
+  board, so the harness board never has the setting switched on. **Two of
+  them are proved against the bug they exist for**, which is the one thing
+  this project has shipped tests without: the carrier test fails six checks
+  on the pre-fix code, and the give-back test fails on the release loop.
+  Both took arranging, and the arranging is the point:
+  - the carrier verdict is tested **over NAT-PMP**, because PCP's reply
+    carries the outside address for free and the same assertion passes on
+    the broken code there. On one build with the bug put back,
+    `test_portmap_pcp` passed and `test_portmap_carrier` failed.
+  - the give-back needed a router that answers long enough to grant a
+    mapping and then goes deaf **while still counting what arrives**
+    (`--fault godeaf`). Killing the router process cannot stand in for it: a
+    dead process logs nothing, so the datagram count stops either way and
+    the check passes on the bug. The first version of that check did exactly
+    that and had to be rebuilt.
+- **The run found three bugs three code-review passes had not**, all of a
+  shape a reviewer cannot see because all three need the thing drawn:
+  - **the 80-column label was cut.** `Form::labelWidth` is 20 at 80 columns
+    and `drawField` pads AND cuts to it; "Ask router to forward" is 21 and
+    came out as "Ask router to forwar". It is "Have router forward" (19)
+    now. Same shape as the co-sysop rows losing their digit to the
+    nine-character column, and **nothing checks a `CfgField` wide label
+    against `labelWidth` at build time**, which is why it has now happened
+    twice.
+  - **the carrier verdict never reached the console on NAT-PMP.** There the
+    mapping is granted before the address is known, so `granted()`'s own
+    line cannot carry the verdict, and the finding reached PORTMAP, SYS and
+    CONFIG but not the one place a sysop reads over the serial port — on
+    the protocol where it matters most.
+  - **four of the six new CONFIG notes overran their status line.**
+    `Form::statusW` is 78 at 80 columns and 38 at 40, and the status line
+    cuts; one of the four was caught by an existing test and the other three
+    only by measuring every string against the column that draws it. Nothing
+    in the build measures either a label or a note, which is why the label
+    and the notes went wrong in the same change.
 
 Sizes, off the ELF, against the branch point. All four built with no
 warnings; the host build and the S3, ESP32-CAM and ETH host profiles too.
 
 | | static DRAM | free | image |
 |---|---|---|---|
-| esp32dev (WROOM) | 165,688 → 165,792 (**+104**) | 15,048 → 14,944 | 1,275,328 → 1,284,240 (+8,912) |
-| esp32cam_aithinker | 178,096 → 178,192 (**+96**) | **2,640 → 2,544** | 1,407,920 → 1,417,136 (+9,216) |
-| ws_s3_lcd147 | 263,160 → 263,296 (+136) | 78,600 → 78,464 | 1,503,520 → 1,512,752 (+9,232) |
-| ws_s3eth | 266,520 → 266,640 (+120) | 75,240 → 75,120 | 1,522,192 → 1,531,408 (+9,216) |
+| esp32dev (WROOM) | 165,688 → 165,792 (**+104**) | 15,048 → 14,944 | 1,275,328 → 1,284,304 (+8,976) |
+| esp32cam_aithinker | 178,096 → 178,192 (**+96**) | **2,640 → 2,544** | 1,407,920 → 1,417,216 (+9,296) |
+| ws_s3_lcd147 | 263,160 → 263,296 (+136) | 78,600 → 78,464 | 1,503,520 → 1,512,832 (+9,312) |
+| ws_s3eth | 266,520 → 266,640 (+120) | 75,240 → 75,120 | 1,522,192 → 1,531,536 (+9,344) |
 
 About a hundred bytes of static DRAM, which is the slot table (two ports,
 two leases, two 12-byte PCP nonces) plus a dozen words of state, and no

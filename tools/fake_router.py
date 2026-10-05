@@ -65,6 +65,18 @@
 #                         short     grants a 20 second lifetime, so a
 #                                   renewal falls due in 10 and the renewal
 #                                   path runs inside a test's lifetime
+#                         godeaf    answers normally, then after
+#                                   --deaf-after seconds LOGS every request
+#                                   and answers none. Not the same as
+#                                   --proto deaf: a mapping is granted
+#                                   first, and the datagrams are still
+#                                   counted, which is what lets a test tell
+#                                   "it gave up" from "it is still asking"
+#                                   after the setting is switched off. The
+#                                   one mode a dead router process cannot
+#                                   stand in for, because a dead process
+#                                   logs nothing and the count stops either
+#                                   way.
 #
 # NOT RUN:      written with the firmware and deliberately not executed:
 #               every testing plan needs Rob's explicit OK. Only its syntax
@@ -151,6 +163,11 @@ class Router(object):
             return 20
         return min(asked, self.args.max_life)
 
+    def gone_deaf(self):
+        """True once --fault godeaf has had its --deaf-after seconds."""
+        return (self.args.fault == "godeaf"
+                and time.time() - self.started >= self.args.deaf_after)
+
     def refusal(self, pcp):
         """The result code this fault makes a success into, or 0."""
         if self.args.fault == "refuse":
@@ -172,7 +189,7 @@ class Router(object):
             # silence, so a client that ever sends PEER or ANNOUNCE is told.
             return struct.pack(">BBBBII", 2, 0x80 | (r_op & 0x7F), 0,
                                PCP_UNSUPP_OPCODE, 0, self.epoch()) + b"\0" * 12
-        if self.args.proto in ("natpmp", "deaf"):
+        if self.args.proto in ("natpmp", "deaf") or self.gone_deaf():
             return None                          # dropped, as many routers do
         if self.args.proto == "unsupp":
             # RFC 6887 section 9: version 0 in the reply is how a client
@@ -219,7 +236,7 @@ class Router(object):
         # unsupp2 is a router that speaks another PCP version and no
         # NAT-PMP, so it must be silent here too, or the board's guess would
         # succeed and the branch would not be exercised as the dead end it is.
-        if self.args.proto in ("deaf", "unsupp2"):
+        if self.args.proto in ("deaf", "unsupp2") or self.gone_deaf():
             return None
         version, op = pkt[0], pkt[1]
         if version != 0:
@@ -296,7 +313,7 @@ def main():
                    help="which protocol this router speaks")
     p.add_argument("--fault", default="none",
                    choices=["none", "refuse", "busy", "carrier", "noaddr",
-                            "otherport", "reboot", "short"],
+                            "otherport", "reboot", "short", "godeaf"],
                    help="what goes wrong, independently of the protocol")
     p.add_argument("--outside", default="203.0.113.9",
                    help="the outside address to claim (RFC 5737 documentation range)")
@@ -306,6 +323,8 @@ def main():
                    help="the longest lifetime this router will grant")
     p.add_argument("--reboot-after", type=float, default=15.0,
                    help="seconds before the reboot mode forgets everything")
+    p.add_argument("--deaf-after", type=float, default=10.0,
+                   help="seconds before the godeaf mode stops answering")
     args = p.parse_args()
     try:
         Router(args).serve()
