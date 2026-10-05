@@ -547,7 +547,12 @@ bool Bbs::rowBans(Session& s) {
     // BBS_BAN_SLOTS + 2 closing rule
     uint8_t i = s.listIdx++;
     if (i == 0) {
-        rowTitle(s, "Bans");
+        // The title carries "table full" rather than a row of its own, so no
+        // row index moves (1.2.2): with every slot a running ban the next
+        // address to earn one does not get it, and a sysop looking at eight
+        // bans and wondering why a ninth keeps getting in deserves that on
+        // their own screen. 17 columns, inside rowTitle's width.
+        rowTitle(s, bans_.full(now) ? "Bans - table full" : "Bans");
         return true;
     }
     if (i == 1) {

@@ -24,6 +24,35 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2-dev.2, 2026-10-05
+
+**A security fix: a full ban table could lift a live ban.** Every board, and
+nothing else in this build.
+
+- **The address ban list refuses a ninth ban instead of throwing one away.**
+  `BanList` holds eight addresses. With all eight carrying bans that were
+  still running, a ninth address earning one reset the first slot, which
+  silently **lifted a real ban**. It took three wrong passwords each from
+  nine different addresses inside one fifteen-minute window, 27 in all, so it
+  was reachable in ordinary abuse of a board whose address is in the
+  directory, not in theory. Now the ninth ban is simply not recorded: that
+  caller is still dropped, as they were anyway, and the eight real bans keep
+  standing. A held answer to the login's "Sysop password:" is refused in the
+  same case, which is the direction that fails shut.
+- **`BANS` says `Bans - table full`** in its title while every slot is a
+  running ban, so a sysop looking at eight bans and wondering why a ninth
+  address keeps getting in has the answer on their own screen. `UNBAN` frees
+  a slot as it always did. The console says it too, at most once a ban window
+  rather than once an attempt.
+- A ban that has run out is now reclaimed when a new address needs a slot.
+  Before, an expired entry was only cleared when that same address was asked
+  about again, so a table of dead bans could sit there looking busy.
+- No behaviour changed on the common path: an empty slot first, then the
+  stalest entry no running ban is using.
+- `host/test_bans.cpp`, 20 checks. The one that matters was run against the
+  parent commit first and fails there: eight live bans, a ninth address, and
+  the first address comes back unbanned.
+
 ## 1.2.2-dev.1 (S3 1.1.9, WS43B 1.0.7, WS2 1.0.8, ETH 1.0.8, MF35 1.1.7, MF35V2 1.0.4, G4848 1.0.5), 2026-10-05
 
 **Ten SSH lines, and a sysop setting that lowers it.** Built, code-reviewed,

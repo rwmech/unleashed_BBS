@@ -63,6 +63,10 @@ public:
     bool banned(uint32_t ip, uint32_t now);
 
     // fail: count a wrong password. True if this failure started a ban.
+    // False when the table is full of running bans, where the failure is
+    // not recorded at all rather than taking a live ban's slot: the caller
+    // is dropped as it would be anyway, and eight real bans are worth more
+    // than trading one of them for a ninth (1.2.2, see slotFor).
     bool fail(uint32_t ip, uint32_t now);
 
     // clear: forget ip (correct password or UNBAN). False if not listed.
@@ -81,9 +85,22 @@ public:
     // at: entry i if it is an active ban (for BANS)
     bool at(uint8_t i, uint32_t now, Entry& out) const;
 
+    // full: every slot holds a running ban, so the next address to earn one
+    // will not get it (1.2.2). BANS says so in its title, since a sysop
+    // looking at eight bans and wondering why a ninth address keeps getting
+    // in deserves the answer on their own screen, not only on the console.
+    bool full(uint32_t now) const;
+
 private:
-    Entry* slotFor(uint32_t ip);                 // the address's entry, made if need be
+    // slotFor: the address's entry, made if need be. **Null when every slot
+    // holds a ban that is still running**, which is what makes fail() and
+    // aheadTake() refuse rather than evict (1.2.2). `now` is wanted so a ban
+    // that has run out can be reclaimed here: banned() only clears an expired
+    // entry when that same address is asked about again, so without it a
+    // table of dead bans would read as full.
+    Entry* slotFor(uint32_t ip, uint32_t now);
     Entry slots_[BBS_BAN_SLOTS];
+    uint32_t fullSaid_ = 0;      // when the console was last told the table is full
 };
 
 class LoginGuard {

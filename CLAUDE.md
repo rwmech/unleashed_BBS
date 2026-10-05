@@ -2121,6 +2121,41 @@ this tree.
     firmware mode; whether 260-720 ms of echo is acceptable and said on the
     listing; and whether SyncTERM speaks SOCKS, which the study could not
     establish either way and which one download settles.
+- **A full ban table lifted a live ban, fixed in 1.2.2-dev.2 on `ssh-lines`**
+  (found 2026-10-05 by another lane costing a rate-limit table and trying to
+  reuse `BanList`; Rob's go to fold it into the SSH lane rather than spend a
+  build cycle on it). `BanList::slotFor` looked for an empty slot, then for
+  the stalest entry with no ban, and **fell back to `&slots_[0]`**, so with
+  all eight slots carrying RUNNING bans a ninth address earning one reset
+  slot 0 and silently unbanned it. Three wrong passwords each from nine
+  addresses inside one fifteen-minute window, 27 in all, on a board whose
+  address is published in the directory: ordinary abuse, not a contrivance.
+  - **It is the "guard bounding the wrong quantity" shape, and the direction
+    is what made it a hotfix rather than a queue item: it failed OPEN on
+    authority**, where everything else in that file fails shut. The table
+    refuses now. The ninth ban is not recorded, the caller is dropped as they
+    were anyway, and eight real bans keep standing rather than one being
+    traded for a ninth. Raising `BBS_BAN_SLOTS` would have made it rarer
+    without closing it, which is why it was not the fix.
+  - `aheadTake` (the login's held sysop answer) is refused in the same case,
+    which is the shut direction: an allowance that cannot be counted is one
+    that could be repeated for ever.
+  - **A sysop can see it**: `BANS` reads `Bans - table full` in its title, in
+    the title rather than a row of its own so no row index moves and the
+    paged list's arithmetic is untouched. The console says it at most once a
+    ban window, not once an attempt (the 1.1.2 lesson that a refusal logged
+    every pass is its own lag).
+  - **Two smaller things in the same function, both the project's own rules
+    applied rather than new behaviour**: an expired ban is reclaimed when a
+    new address needs a slot, since `banned()` only cleared one when that
+    same address was asked about again and a table of dead bans would
+    otherwise read as full; and "the stalest entry" is picked by
+    `plat::since` rather than by comparing two raw `firstFail` stamps, which
+    chose the wrong entry across the clock's wrap.
+  - `host/test_bans.cpp`, 20 checks, **and the key one was run against the
+    parent commit first and fails there** (the first address comes back
+    unbanned), because this project has shipped tests that agreed with the
+    bug.
 - **Ten SSH lines, and a setting that lowers it: built on `ssh-lines`
   (1.2.2-dev.1, 2026-10-05), code-reviewed, not tested.** Rob: "we can also
   do a full 10 lines ssh right?", then, told eight was a judgement rather

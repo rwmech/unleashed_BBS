@@ -66,23 +66,74 @@ bool BanList::banned(uint32_t ip, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------
-// fail: count inside the window; reuse the stalest slot when full
+// slotFor: the address's entry, made if need be; null when every slot holds
+// a ban that is still running.
+//
+// **This used to fall back to &slots_[0], and that was a live fail-open hole**
+// (found 2026-10-05, fixed in 1.2.2). With all BBS_BAN_SLOTS carrying ACTIVE
+// bans, a ninth address earning one reset slot 0, which silently lifted a
+// real ban. Reachable in ordinary abuse rather than in theory: three wrong
+// passwords each from nine addresses inside one fifteen-minute window, 27 in
+// all, against a board whose address is published in the directory.
+//
+// It is the "guard bounding the wrong quantity" shape, and the direction is
+// what made it worth a hotfix: it failed OPEN on authority, where everything
+// else here fails shut. So the table now refuses: the ninth ban is not
+// recorded, the caller is dropped as they would be anyway, and eight real
+// bans keep standing rather than one being traded for a ninth. Raising
+// BBS_BAN_SLOTS would have made it rarer without closing it.
+//
+// What has NOT changed is the common path: an empty slot first, then the
+// stalest entry no live ban is using, which is still reused freely.
 // ---------------------------------------------------------------------------
-BanList::Entry* BanList::slotFor(uint32_t ip) {
+BanList::Entry* BanList::slotFor(uint32_t ip, uint32_t now) {
     Entry* slot   = nullptr;
     Entry* empty  = nullptr;
-    Entry* oldest = nullptr;      // oldest non-banned entry, evicted when full
+    Entry* oldest = nullptr;      // the stalest entry no running ban is using
     for (auto& e : slots_) {
         if (e.ip == ip) { slot = &e; break; }
+        // A ban that has run out is as good as an empty slot. banned() only
+        // clears an expired entry when that same address is asked about
+        // again, so without this a table of dead bans would read as full and
+        // refuse every new one.
+        // `until` is a deadline, not a past stamp, so it is read the way
+        // banned() and at() read it, and it is retired to 0 the moment it
+        // passes (the 1.2.0 rule for a deadline compared this way).
+        if (e.until && static_cast<int32_t>(now - e.until) >= 0) e = Entry();
         if (!e.ip) { if (!empty) empty = &e; continue; }
-        if (!e.until && (!oldest || e.firstFail < oldest->firstFail)) oldest = &e;
+        // Oldest by elapsed time, not by comparing two raw stamps: firstFail
+        // is kept for a whole window and a plain `<` picks the wrong entry
+        // across the millisecond clock's wrap (the 1.2.1 rule).
+        if (!e.until && (!oldest || plat::since(now, e.firstFail) > plat::since(now, oldest->firstFail)))
+            oldest = &e;
     }
     if (!slot) {
-        slot = empty ? empty : (oldest ? oldest : &slots_[0]);
+        slot = empty ? empty : oldest;
+        if (!slot) {
+            // Said at most once a ban window, not once an attempt: a refusal
+            // logged on every pass is its own lag (the 1.1.2 lesson), and the
+            // attempts that reach here come as fast as callers can connect.
+            if (!fullSaid_ || plat::since(now, fullSaid_) > BBS_BAN_WINDOW_MS) {
+                char ip4[16];
+                ipToText(ip, ip4, sizeof(ip4));
+                plat::log("guard: all %d ban slots are running bans; %s is not banned (BANS says so)",
+                          static_cast<int>(BBS_BAN_SLOTS), ip4);
+                fullSaid_ = now ? now : 1;
+            }
+            return nullptr;
+        }
         *slot = Entry();
         slot->ip = ip;
     }
     return slot;
+}
+
+// full: every slot is a running ban, so the next address to earn one will
+// not get it. BANS puts it in its title.
+bool BanList::full(uint32_t now) const {
+    for (const Entry& e : slots_)
+        if (!e.ip || !e.until || static_cast<int32_t>(now - e.until) >= 0) return false;
+    return true;
 }
 
 // A window starts at the first thing counted in it, a failure or a held
@@ -100,7 +151,11 @@ static void windowFrom(BanList::Entry& e, uint32_t now) {
 }
 
 bool BanList::fail(uint32_t ip, uint32_t now) {
-    Entry* slot = slotFor(ip);
+    Entry* slot = slotFor(ip, now);
+    // The table is full of running bans (slotFor): this failure is not
+    // recorded, which is the refusal, and false is the truth, since it
+    // started no ban. The caller is dropped by the code that called us.
+    if (!slot) return false;
     if (slot->until) return false;                // already banned
 
     windowFrom(*slot, now);
@@ -124,7 +179,12 @@ bool BanList::clear(uint32_t ip) {
 // ahead of it (1.2.1). See guard.h.
 // ---------------------------------------------------------------------------
 bool BanList::aheadTake(uint32_t ip, uint32_t now) {
-    Entry* slot = slotFor(ip);
+    Entry* slot = slotFor(ip, now);
+    // No slot to count the allowance in, so it is not given: a held answer
+    // that cannot be counted is one that could be repeated for ever, and
+    // this is the direction that fails shut (held keys are dropped, as
+    // before 1.2.1).
+    if (!slot) return false;
     if (slot->until) return false;
     windowFrom(*slot, now);
     if (slot->ahead) return false;
