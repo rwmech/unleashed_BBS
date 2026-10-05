@@ -1791,6 +1791,57 @@ this tree.
     as routers and the board as what they route to, which is also the
     fan-out answer to "a few dozen": the board then holds one pairing
     rather than thirty, and `kPeers = 8` stops being the wall.
+  - **Repeater to repeater is in scope** (Rob, 2026-10-05: "repeater to
+    repetaer of the callin sat should apply"), so multi-hop, not one hop.
+    My concerns, given to him and carried into the spec, with the shape
+    that answers them:
+    - **One channel, so hops consume capacity rather than adding it.**
+      Every ESP-NOW peer sits on the same channel, where a real mesh
+      spreads hops across channels, so a three-hop chain carrying one
+      caller puts three times the frames on the same air. The chain that
+      extends reach shrinks capacity, and a fairground wants both.
+    - **Latency compounds and a terminal is the worst payload for it:**
+      2-6 ms a hop forwarding from the receive callback, about 40 ms a hop
+      on a tick, and two tick-driven hops is where a caller notices. A
+      camera does not care about 100 ms; keystroke echo is the experience.
+    - **A hand-planted chain has no redundancy and no repair.** One flat
+      battery drops everything behind it mid-session. Zigbee survives that
+      because every router has alternatives and the mesh heals, which is
+      the 3-to-5-week version rather than the 1.5-week one.
+    - **Forwarding is safe, terminating is not.** A repeater passing
+      sealed frames it cannot open sees nothing; a node that terminates a
+      session and re-originates it, which is what a terminal server does,
+      reads every keystroke. The trick that would scale past twenty peers
+      is the one that can read the callers, so the trust line is stated,
+      never assumed.
+    - **The shape proposed:** cap at two hops, plan the topology by hand
+      rather than discovering it, forward from the receive callback and
+      never from a tick, forbid a repeater from terminating a session, and
+      have each node say where a frame died, because debugging a three-hop
+      chain at a fairground with no console is otherwise a bad evening.
+- **An ESP32 running the directory, its own item** (Rob, 2026-10-05: "if we
+  NEED it to help the user get outside the firewall routing we could have an
+  esp32 device acting like directory, or an esp32 version of directory
+  running more obscure and hidden networks privacy forward not in the
+  directory ... this is about discovering networks and bridging the gap ...
+  this is not part of callin"). **Explicitly not part of CALLIN**, and not
+  the AP gateway either.
+  - **It fits the core value better than anything else on the list**,
+    because the directory is the one piece of this project that is still a
+    computer. The HTTP is already proven on-chip (the backup window runs
+    HTTP inside the BBS select loop, no httpd task, 27 KB of flash saved
+    and host-testable), and a listing is small enough that a flat file does
+    what SQLite does on the droplet, the way `users.txt` already does for
+    accounts. So a whole BBS network with no computer anywhere in it is
+    reachable.
+  - **The catch is that a directory has the same inbound problem a board
+    has**, so an internet-facing one still needs a forwarded port. Where it
+    is unambiguously strong is the case needing no internet at all: the
+    node-local list of boards a fairground portal must show is the same
+    mechanism at a smaller scale, so the node's board list should be
+    designed so an ESP32 directory could later feed or replace it.
+  - **"Not in the public directory" is obscurity, not anonymity**, and must
+    be said that way so nobody over-trusts it.
   - **the local console** (a terminal on a sat or on the board) uses the hidden sysop node.
   - **The terminal sat goes on the website when it's ready** (Rob, 2026-10-01): its own installer page under /satellites, like the camera sat, with its docs, and a **wiring diagram** for a serial device and for an old-school terminal (a VT220 or a DB9/DB25 RS-232 port): the sat's UART pins, an RS-232 level shifter (MAX3232-class) since RS-232 is ±12 V, the DB9 pinout (TX, RX, GND, and RTS/CTS, DTR/DCD if hang-up uses them), null-modem crossing for a DTE terminal, and the baud and format settings that match a VT220's set-up. Drawn in the site's line-art style, checked against a real wiring before it is published.
   - **A hardware button on the terminal sat** (Rob, 2026-10-01: "since its tied to a console add a hardware button to disconnect, reconnect, etc"): a press hangs up the terminal's session (the board sees a clean hang-up, the line freed); a press while idle connects, or reconnects to the board; a long press could pick between paired boards or show the sat's status on the terminal. The sat's BOOT button where the board has nothing better, an external one on a free pin otherwise. Specified with the sat.
@@ -1995,18 +2046,77 @@ this tree.
     firmware mode; whether 260-720 ms of echo is acceptable and said on the
     listing; and whether SyncTERM speaks SOCKS, which the study could not
     establish either way and which one download settles.
-- **Ten SSH lines: eight today, and raising it is arithmetic** (Rob,
-  2026-10-05: "we can also do a full 10 lines ssh right?"). Queued for
-  1.2.2. `BBS_SSH_MAX` is 8 in all seven S3 profiles (`src/board.h`), and
-  that is a cap on how many of the ten caller lines may be SSH links, not a
-  separate pool: SSH callers sit on the same ten nodes, so the socket budget
-  does not move. Per link the cost is two `BBS_SSH_RING` (4 KB) rings and a
-  session budget of about 48 KB, all PSRAM, over one shared
-  `BBS_SSH_STACK` (16 KB) internal task stack, so ten looks comfortable on
-  the 8 MB boards. **The one to measure is the Makerfabs**, whose 2 MB of
-  quad PSRAM was sized at eight on purpose against the 300 KB framebuffer
-  and 128 KB kept back. Change two lines, then read internal heap low and
-  PSRAM free on each board with the lines full.
+- **Ten SSH lines, and a setting that lowers it: built on `ssh-lines`
+  (1.2.2-dev.1, 2026-10-05), code-reviewed, not tested.** Rob: "we can also
+  do a full 10 lines ssh right?", then, told eight was a judgement rather
+  than a memory limit, "I think if we dont have a memory limit we do 10 or
+  make it configurable for memory purposes." So both: ten as every S3's
+  ceiling, and `ssh_lines` to lower it.
+  - `BBS_SSH_MAX` is 10 in all seven S3 profiles, each with its own
+    arithmetic in its comment. It caps how many of the ten caller lines may
+    be SSH, not a separate pool, so the socket budget does not move: a
+    caller is one node and one socket whichever door they came in by.
+  - **Memory was never the limit, and the code already proved it.**
+    `sshd::cap()` works the live ceiling out at every connect from
+    `plat::extFreeBytes()` less `BBS_SSH_PSRAM_KEEP`, over
+    `BBS_SSH_PSRAM_EACH`, so raising the constant cannot run a board out of
+    memory: the only thing it can do is have a connection refused later.
+    Ten at 48 KB plus the 128 KB kept back is 608 KB, against the 1.71 MB
+    the Makerfabs (2 MB quad, the smallest SSH board) measured free with its
+    300 KB framebuffer up. That self-limiting cap is why this was two lines
+    of arithmetic rather than a measurement campaign.
+  - **`ssh_lines`, CONFIG network's new last row** ("SSH lines at once",
+    `SSH lines` at 40). 1 to `BBS_SSH_MAX`, and **0 is the board's figure,
+    never "SSH off"**: `ssh_port` above it already uses 0 for off, and one
+    page may not have two meanings for 0. The range's top comes from
+    `BBS_SSH_MAX` itself in `kNumKeys`, not a literal beside the table,
+    because a count written next to a table instead of derived from it has
+    shipped here three times.
+  - **A file asking for more than the board takes loses that line, not the
+    file**, and this is the find of the lane, caught by reading rather than
+    by a test. `ssh_lines` is the first setting whose range is a property of
+    the BOARD rather than of the format, so the same system.cfg can be in
+    range on one board and out of range on another: a backup from a ten-line
+    board restored onto a profile built for fewer. `reload()` returns false
+    on any problem at all and `check()` refuses a restore the same way, so a
+    plain `number()` refusal would have thrown away the network, the
+    passwords and every plugin section over one number whose safe meaning is
+    "as many as you can take". It is clamped and logged for a file
+    (`!c.bare`) and still refused in CONFIG (`c.bare`), which is exactly the
+    shape of 1.1.2's ssh_port clash and 1.0.2's dropped-not-refused rule.
+    **The general rule, now that there is a second instance: a range that
+    depends on the board may never be a reason to refuse a whole file.**
+  - **Live, and the existing sessions stay.** `sshd::boardCap()` reads the
+    setting on the loop at each connect; the SSH task always walks all
+    `BBS_SSH_MAX` slots, so a lowered figure never abandons a link that is
+    open. There is nothing honest to do with a session above the new
+    number, and cutting a caller off to make a figure true is a worse
+    answer than letting it come true as they leave. configSave's verdict
+    says `Saved and live`, beside `cgnat_local`, the only other live row on
+    that page.
+  - **`cap()` is now floored at `inUse()` from below.** Without it a sysop
+    who lowers the figure under the callers already on makes HARDWARE read
+    "6 of 4", which reads as an arithmetic fault rather than a limit coming
+    true; "6 of 6" with the note "most 4" is the same thing it has always
+    meant when PSRAM is short, and claim() refuses on `inUse() >= cap()`
+    either way.
+  - **The real risk was the one shared SSH task, not the memory**, and it
+    needed one change. One task on core 0 at priority 2 serves every link,
+    and the original review had already found it able to spin and starve
+    IDLE0 into the 30 s watchdog, fixed with `g_blocked`, a streak cap and a
+    10 ms pause after a 50 ms pass. The streak cap was 16 busy passes with
+    no wait, and **a pass walks every link**, so what the guard actually
+    bounds is passes, while what matters is the work between two waits. At
+    ten links that was a quarter more. `kStreak` is `128 / BBS_SSH_MAX`
+    now (16 at eight, 12 at ten), which keeps passes x links constant and
+    makes the guard mean the same thing at any future figure. The other two
+    guards are about one link's work and did not move. `BBS_SSH_STACK`
+    stays 16 KB: `taskMain` services one link at a time, so ten links add
+    passes, not depth.
+  - Owed to the bench, with the lines full: internal heap free and its low
+    on each board (lwIP's per-socket buffers are internal and are what
+    bites before PSRAM), the SSH task's own `ssh: task stack least free`
+    line, and SYS's loop figures while ten links are busy.
 - **Browser SSH is being BUILT** (Rob, 2026-10-04: "SSH Works, get it built", and "can't we add a ssh from the browser to connect to these sites now?"). This reverses the tabling below, which stays as the history. The plan is `internal/plan-web-ssh-2026-10-04.md`: six phases, 8.5 to 12.5 days, most of it needing no hardware. Settled with it:
   - **No staff elevation from the web, at all** (Rob, 2026-10-04: "No elevation at all from the web"). Not "no staff from an allow-listed address", which was the narrower proposal: **no caller arriving through the relay ever becomes staff**, and that does not change if the PROXY protocol is built later and their real address is known. `staffPassword` returns `Access::None` before any comparison, the same shape as "no staff over RF" and as the published default from outside. **The reason to keep it even when it looks over-careful:** the staff password's only rate limit is the address ban, three wrong in fifteen minutes, because a wrong `BYE <password>` is a plain logoff that counts nothing else. A relay address cannot be banned without locking out every browser caller, so without this rule the web is an unlimited guessing path at the one password that owns the board. Rob elevates over telnet or SSH as now.
   - **The relay runs as its own service on the droplet, behind the .com site's Caddy route**, not inside the directory. The directory's "never makes outbound connections" promise then stands exactly as written, which the 2026-09-28 research had assumed would need rewording. The site already caches the board list over loopback, so the relay needs no database access and the directory changes not one line.
