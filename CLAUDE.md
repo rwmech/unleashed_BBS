@@ -1878,6 +1878,22 @@ this tree.
     needs saying instead is the opposite device, a **concentrator**, which
     terminates many callers and re-originates them, reads every keystroke,
     and is the only thing that scales past twenty gateways a board.
+- **A live fail-open hole in the ban list, found 2026-10-05 and folded into
+  the SSH-lines lane on Rob's call** (so it costs no build cycle of its own).
+  `BanList::slotFor` (`src/core/guard.cpp` ~71-86) takes an empty slot, then
+  the oldest **expired** one, and when neither exists resets `slots_[0]`: so
+  with all eight `BBS_BAN_SLOTS` carrying **active** bans, banning a ninth
+  address silently clears one. Reachable in ordinary abuse at 27 wrong
+  passwords from nine distinct addresses inside one fifteen-minute window,
+  and the boards are listed publicly. It is the "guard bounding the wrong
+  quantity" shape, and what makes it worth fixing at once is the direction:
+  **it fails OPEN on authority**, where everything else here fails shut. The
+  fix is to refuse rather than evict when every slot is an active ban.
+  **Found by costing a feature, not by looking:** the gateway sat's new
+  per-pairing rate limit tried to reuse `BanList` as free storage, and
+  discovering the eviction is why that limit got its own 96-byte table
+  indexed by peer slot instead.
+
 - **An ESP32 running the directory, its own item** (Rob, 2026-10-05: "if we
   NEED it to help the user get outside the firewall routing we could have an
   esp32 device acting like directory, or an esp32 version of directory
