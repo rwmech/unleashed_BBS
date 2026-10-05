@@ -1942,6 +1942,30 @@ this tree.
     that standard's own framing of AES-128-CCM. A serial terminal's cable is
     physical. Only the phone-to-gateway hop is in the clear.
 
+- **CONFIG's page list should show each plugin on or off** (Rob,
+  2026-10-05: "Config should show on/off for plugins from config"; queued
+  for the next time the BBS code is open, not started). Cheap: `configPages`
+  (`src/core/bbs_sysop.cpp` ~2645) **already calls `plugins::running(i)` in
+  that loop**, to hide camsat while it is running, and then prints
+  `plugin: <title>` with no state. The fact is in hand and not shown.
+  - **Three states, not two.** Running; switched off; and **cannot run
+    here**, which this board already distinguishes elsewhere (a card-only
+    plugin enabled with no card says so, 1.0.0) and which is the S3-only
+    greyed-row convention. A sysop who sees "off" for a plugin that could
+    never start learns the wrong thing.
+  - **A marker, not colour alone.** Plain ASCII has no colour, which is the
+    same reason numbers work beside cursor keys everywhere here. The house
+    pattern is a one-character mark with a key under the list, as the
+    `*GUEST >CO-SYSOP ]SYSOP` footnote does. Colour may reinforce it.
+  - **Width is the real constraint.** Those rows are already clipped at a
+    word break because `board` and `forums` wrapped on a C64 (found
+    capturing the setup guide, website 0.16.0), so a marker has to come out
+    of the name column or the description, with a 40-column form decided
+    rather than discovered.
+  - Worth deciding at the same time: whether the row is also where a plugin
+    is switched, or whether it stays a sign and the switch stays on the
+    plugin's own page, which is where its `enabled` key already lives.
+
 - **A live fail-open hole in the ban list, found 2026-10-05 and folded into
   the SSH-lines lane on Rob's call** (so it costs no build cycle of its own).
   `BanList::slotFor` (`src/core/guard.cpp` ~71-86) takes an empty slot, then
