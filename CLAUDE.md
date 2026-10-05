@@ -1942,6 +1942,39 @@ this tree.
     that standard's own framing of AES-128-CCM. A serial terminal's cable is
     physical. Only the phone-to-gateway hop is in the clear.
 
+- **Three lessons from the gateway sat's host tests (2026-10-05), general
+  rather than that repo's**, kept here because each would bite this one.
+  1,826 checks, 0 failures, and **sixteen guards proved by removal**: the
+  suite compiles once per guard with exactly one taken out and refuses to
+  pass unless something catches each. That found **five tests passing for
+  the wrong reason**, and two real bugs.
+  - **`#if` cannot see an enumerator.** Written as an enum, every `#if`
+    compared 0 against an unknown identifier, so the condition was false and
+    **every DNS guard was compiled out of the firmware**, not merely out of
+    the tests. `-Werror` caught it on an unused parameter, which is to say
+    nothing aimed at it did. A `#if` over anything but a macro is silently
+    false, and this project's board profiles are `#if` the whole way down.
+  - **A prefix test over a set of words is only safe while no word in the
+    set is a prefix of a word outside it, and nothing tells you when that
+    stops being true.** `isYes("off")` returned **true**: it tested the
+    first letter against `y Y 1 o O t T`, and "off" shares its first letter
+    with "on", so a sysop switching a role off switched it on.
+  - **The thing that verifies the tests can itself be vacuous.** The
+    guard-removal runner first reported "every guard has a test" having
+    tested none, because it built its case list from a shell variable that
+    did not exist. Same shape as the usability check that could not see a
+    doubled footer and the `or` in a site check that cannot fail: **a
+    verifier needs its own proof, and the cheap one is to assert the count
+    of cases it ran.**
+  - The five tests passing for the wrong reason are worth the pattern too:
+    each was refused by a *different* guard than the one under test (a
+    compression-pointer case that was simply too short, a truncation sweep
+    whose read past the end stayed inside a long-lived allocation), and one
+    clamp was tested at an over-amount that happened to land on a multiple
+    of the ring size, so the mask hid its absence and both readings were
+    right by accident. **Proving a thing is refused is not proving which
+    check refused it.**
+
 - **CONFIG's information-page form does not say where the body is written**
   (Rob, 2026-10-05, sitting in `INFO PAGE 0` on HQ: "where does the contents
   go?"). The form carries Page title and Who may read it, and nothing else,
