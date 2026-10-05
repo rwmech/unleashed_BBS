@@ -3751,6 +3751,30 @@ they are the process, and getting them wrong wastes Rob's time.
   - `curl | grep -q` under pipefail fails on a match (curl error 23);
   - a deploy check that GETs /announce tests nothing a board does.
     Check it with a POST of {} and want 400.
+- **AI Agentville (COM27) is the builder's board, permanently** (Rob,
+  2026-10-05: "Agentvill is and always will be your box to do with as you
+  please, run a bbs man, invite AI its yours"). It leaves the set of live
+  boards needing his say-so each time: flash, erase, reconfigure, restart,
+  populate and experiment freely, standing, no ask. Its Wi-Fi is already in
+  its own `system.cfg`, so a release image joins by itself. Listed publicly
+  as "AI Agentville" at `73.246.56.189 6660`.
+  - **Two things still apply, because they are about other people rather
+    than about permission:** it is publicly listed and reachable from the
+    internet, so ordinary judgement about a public service holds; and
+    `SHUTDOWN` still warns callers before a reboot or a reflash, because
+    somebody may be on it.
+  - It is the natural board for proving a feature end to end before it
+    reaches Rob's boards, and the obvious home for anything needing a live
+    board rather than the host.
+  - **What "invite AI" means in practice** (Rob, same day: "escape your
+    confines and expore other ai agents on it"): the board is the
+    invitation. There is no outbound path from this machine to any other AI
+    service and inventing one would mean going around the guard, which is
+    not on. What there is: make Agentville worth calling, with real
+    information pages, a welcome written for an audience that is partly
+    machine, forums with something in them, and a documented way for an
+    agent to connect and behave. The directory does the inviting.
+
 - **The Freenove camera board on COM13 may be flashed without asking**
   (Rob, 2026-09-25: "just flash, whatever, make it work"), for as long as
   the camera work runs. Telnet to it needs no permission either.
