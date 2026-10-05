@@ -136,6 +136,47 @@ int main() {
               b.banned(addr(1), t3) && b.banned(addr(BBS_BAN_SLOTS - 1), t3));
     }
 
+    // The expired-ban reclaim in slotFor, on its own. The blocks above call
+    // banned() on the stale slot first, and banned() clears it, so the slot
+    // they reuse was found EMPTY and the reclaim was never the reason they
+    // passed (the second review's find). Nothing asks banned() here.
+    //
+    // Honest about what this proves: it is COVERAGE, not a caught bug. Run
+    // against the commit that added the reclaim it passes, because the
+    // reclaim was right; what it stops is the reclaim being taken out again
+    // by somebody who reads the blocks above and believes they cover it.
+    {
+        BanList b;
+        const uint32_t t = 1000;
+        for (int i = 0; i < BBS_BAN_SLOTS; ++i) ban(b, addr(i), t);
+        const uint32_t later = t + BBS_BAN_MS + 1;        // every ban has run out
+        check("a table of dead bans is not a full table, with nothing asked first",
+              ban(b, addr(100), later));
+        check("and it does not read as full", !b.full(later));
+    }
+
+    // A ban nobody comes back for must not come back by itself. `until` is a
+    // deadline read as a signed difference, so an expired one left standing
+    // reads as a ban again after 24.86 days (and for 24.86 more). banned()
+    // sweeps every slot now, not only the address it was asked about, so any
+    // other caller connecting retires it. **This block is the one that fails
+    // against the parent**, where the ban is back and reads as 35,791
+    // minutes left in BANS. The sweep narrows the hole rather than closing
+    // it: a board that accepts no connection at all for 24.86 days still
+    // sees it, and closing that properly means keeping when the ban started
+    // instead of when it ends (queued for 1.2.2).
+    {
+        BanList b;
+        const uint32_t t = 1000;
+        ban(b, addr(0), t);
+        const uint32_t gone  = t + BBS_BAN_MS + 1;
+        const uint32_t ages  = gone + 0x80000000u;        // 24.86 days later
+        check("a different address connecting retires the expired ban",
+              !b.banned(addr(1), gone));
+        check("so it has not come back 24.86 days on", !b.banned(addr(0), ages));
+        check("and its slot is free for somebody else", ban(b, addr(2), ages));
+    }
+
     // A failure counted on an address with no slot must not be remembered as
     // a partial count somewhere else: the ninth address asking again while
     // the table is full is still refused, and nothing it did leaked into

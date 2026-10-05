@@ -50,19 +50,43 @@ bool sameUser(const char* a, const char* b) {
     return *a == *b;
 }
 
+// banLive: e carries a ban that has not run out. The ONE reading of `until`
+// (1.2.2): banned(), slotFor(), at() and full() each asked separately, and
+// this project's own rule from the load line is one source for a fact rather
+// than copies that have to agree.
+//
+// `until` is a deadline, so this is only sound while an expired one is
+// retired to 0: banned() sweeps every slot for that, on every accepted
+// connection, and slotFor sweeps too. **The residual, which the sweep
+// narrows and does not close:** a board that accepts no connection at all
+// for 24.86 days reads `(int32_t)(now - until)` as negative again and the
+// ban comes back for another 24.86 days. Closing it properly means keeping
+// when the ban STARTED and asking plat::since, which moves Entry's layout
+// and BANS's minutes-left arithmetic; queued for 1.2.2 rather than done in
+// a hotfix.
+bool banLive(const BanList::Entry& e, uint32_t now) {
+    return e.until && static_cast<int32_t>(now - e.until) < 0;
+}
+
 } // namespace
 
 // ===========================================================================
 // BanList
 // ===========================================================================
 
+// banned: an active ban covers ip. **Sweeps every slot, not only ip's**
+// (1.2.2): this runs on every accepted connection and is the only clock on
+// this table that is guaranteed to run at all, and an expired deadline left
+// standing reads as a ban again after 24.86 days (see banLive). Before, a
+// banned address that never came back left its entry for ever.
 bool BanList::banned(uint32_t ip, uint32_t now) {
+    bool hit = false;
     for (auto& e : slots_) {
-        if (e.ip != ip || !e.until) continue;
-        if (static_cast<int32_t>(now - e.until) < 0) return true;
-        e = Entry();                              // ban expired
+        if (!e.until) continue;                   // no ban, or counting a window
+        if (!banLive(e, now)) { e = Entry(); continue; }    // ban expired: retired here
+        if (e.ip == ip) hit = true;               // on, and the sweep carries on
     }
-    return false;
+    return hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,15 +115,20 @@ BanList::Entry* BanList::slotFor(uint32_t ip, uint32_t now) {
     Entry* empty  = nullptr;
     Entry* oldest = nullptr;      // the stalest entry no running ban is using
     for (auto& e : slots_) {
-        if (e.ip == ip) { slot = &e; break; }
-        // A ban that has run out is as good as an empty slot. banned() only
-        // clears an expired entry when that same address is asked about
-        // again, so without this a table of dead bans would read as full and
-        // refuse every new one.
-        // `until` is a deadline, not a past stamp, so it is read the way
-        // banned() and at() read it, and it is retired to 0 the moment it
-        // passes (the 1.2.0 rule for a deadline compared this way).
-        if (e.until && static_cast<int32_t>(now - e.until) >= 0) e = Entry();
+        // A ban that has run out is as good as an empty slot, whoever owns
+        // it, or a table of dead bans would read as full and refuse every
+        // new one. Retired BEFORE the ip match, so nothing here depends on
+        // banned() having been called first: the address's OWN expired entry
+        // would otherwise come back with a stale deadline and fail() would
+        // read it as "already banned" and never re-ban it.
+        if (e.until && !banLive(e, now)) e = Entry();
+        // `e.ip &&`, because 0 is the empty-slot sentinel: without it an
+        // address of 0 is handed an empty slot and counted into an entry
+        // that at() hides and full() reads as free, so the next address
+        // would overwrite its ban. No TCP peer is 0.0.0.0, but this branch
+        // is designing caller lines with no address, and slotFor is now the
+        // single arbiter of who gets a slot.
+        if (e.ip && e.ip == ip) { slot = &e; break; }
         if (!e.ip) { if (!empty) empty = &e; continue; }
         // Oldest by elapsed time, not by comparing two raw stamps: firstFail
         // is kept for a whole window and a plain `<` picks the wrong entry
@@ -116,7 +145,7 @@ BanList::Entry* BanList::slotFor(uint32_t ip, uint32_t now) {
             if (!fullSaid_ || plat::since(now, fullSaid_) > BBS_BAN_WINDOW_MS) {
                 char ip4[16];
                 ipToText(ip, ip4, sizeof(ip4));
-                plat::log("guard: all %d ban slots are running bans; %s is not banned (BANS says so)",
+                plat::log("guard: all %d ban slots are running bans; %s is not banned (BANS says the table is full)",
                           static_cast<int>(BBS_BAN_SLOTS), ip4);
                 fullSaid_ = now ? now : 1;
             }
@@ -131,8 +160,7 @@ BanList::Entry* BanList::slotFor(uint32_t ip, uint32_t now) {
 // full: every slot is a running ban, so the next address to earn one will
 // not get it. BANS puts it in its title.
 bool BanList::full(uint32_t now) const {
-    for (const Entry& e : slots_)
-        if (!e.ip || !e.until || static_cast<int32_t>(now - e.until) >= 0) return false;
+    for (const Entry& e : slots_) if (!e.ip || !banLive(e, now)) return false;
     return true;
 }
 
@@ -204,7 +232,7 @@ void BanList::aheadGive(uint32_t ip) {
 bool BanList::at(uint8_t i, uint32_t now, Entry& out) const {
     if (i >= BBS_BAN_SLOTS) return false;
     const Entry& e = slots_[i];
-    if (!e.ip || !e.until || static_cast<int32_t>(now - e.until) >= 0) return false;
+    if (!e.ip || !banLive(e, now)) return false;
     out = e;
     return true;
 }

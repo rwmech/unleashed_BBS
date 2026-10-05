@@ -2152,10 +2152,46 @@ this tree.
     otherwise read as full; and "the stalest entry" is picked by
     `plat::since` rather than by comparing two raw `firstFail` stamps, which
     chose the wrong entry across the clock's wrap.
-  - `host/test_bans.cpp`, 20 checks, **and the key one was run against the
-    parent commit first and fails there** (the first address comes back
-    unbanned), because this project has shipped tests that agreed with the
-    bug.
+  - `host/test_bans.cpp`, 25 checks, **and the key ones were run against the
+    parent first and fail there**, because this project has shipped tests
+    that agreed with the bug. Two of the five new ones PASS on the parent and
+    are coverage rather than catches, and the file says so: claiming a catch
+    for a check that would have passed anyway is the same dishonesty in the
+    other direction.
+  - **The review of it found one more of the same family next door, fixed in
+    1.2.2-dev.3: a ban nobody came back for came back by itself after 24.86
+    days.** `until` is a deadline read as `(int32_t)(now - until) < 0`, sound
+    only while an expired one is retired to 0, and `banned()` retired only
+    the slot whose address it was asked about. A banned address that never
+    reconnected left its entry for ever; at 24.86 days of uptime the
+    comparison went negative again and that address was refused at the door
+    for another 24.86 days, with BANS showing it 35,791 minutes left. The
+    plausible victim is the sysop's own address after three fat-fingered
+    BYEs a month earlier. `banned()` sweeps every slot now, on every accepted
+    connection, which is the only clock on that table guaranteed to run.
+    **It narrows the hole and does not close it:** a board that accepts no
+    connection for 24.86 days still sees it, and the real fix is to store
+    when a ban STARTED and ask plat::since, which moves Entry's layout and
+    BANS's minutes-left sum. Queued, not done in a hotfix.
+    **The general rule, third time of asking: a deadline compared as a signed
+    difference needs a retiring clock that is guaranteed to run, and "some
+    other code path clears it" is not one.** The 1.2.0 load line had the same
+    shape and the same 24.86-day fuse.
+  - Also from that review: one reading of "is this ban live" where four
+    places asked separately; `slotFor` retires an expired ban before it
+    matches the address, so nothing depends on call order; and an address of
+    0 is no longer matched as an existing entry, which matters because the
+    branch next door is designing caller lines with no address.
+  - **Open for Rob, recorded in `guard.h`:** `BanList::fail` returns false
+    when the table is full, so a ninth address's wrong staff passwords are
+    never counted and never show in BANS, where `LoginGuard::fail` twenty
+    lines below answers the identical question with "treat as locked: hang
+    this call up". Not a worse guess rate than before the fix (the old
+    eviction let addresses rotate indefinitely), but less visibility. The
+    two candidates are `return true` there, which makes two existing log
+    lines say "banned" about a ban never recorded, or a `countable()` the
+    staff-password check consults with local exempt, which is the shape of
+    "no staff elevation from the web".
 - **Ten SSH lines, and a setting that lowers it: built on `ssh-lines`
   (1.2.2-dev.1, 2026-10-05), code-reviewed, not tested.** Rob: "we can also
   do a full 10 lines ssh right?", then, told eight was a judgement rather

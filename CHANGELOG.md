@@ -24,6 +24,41 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2-dev.3, 2026-10-05
+
+**The code review of dev.2, and one more bug of the same family it found
+sitting next door.** Every board.
+
+- **A ban nobody came back for came back by itself after 24.86 days.** The
+  ban's end is stored as a deadline and read as a signed difference, which is
+  only sound while an expired one is retired to zero, and `banned()` retired
+  only the slot belonging to the address it was asked about. So a banned
+  address that never reconnected left its entry standing for ever, and at
+  24.86 days of uptime the comparison turned negative again: that address was
+  refused at the door for another 24.86 days, with `BANS` showing it 35,791
+  minutes left. No attacker needed, and the victim could be the sysop's own
+  address after three fat-fingered `BYE`s a month earlier. `banned()` sweeps
+  every slot now, on every accepted connection, which is the only clock on
+  that table guaranteed to run. **It narrows the hole rather than closing
+  it**: a board that accepts no connection at all for 24.86 days still sees
+  it, and closing that means storing when a ban started rather than when it
+  ends, which moves the record's layout and `BANS`'s minutes-left sum.
+- One reading of "is this ban still running", shared by the four places that
+  each asked separately.
+- `slotFor` retires an expired ban before it looks for the address, so
+  nothing depends on `banned()` having been called first, and it no longer
+  treats an address of 0 as an existing entry.
+- The console line said `BANS says so`; `BANS` says the table is full.
+- `host/test_bans.cpp` is 25 checks. The new one for the resurrection fails
+  against dev.2; the two for the expired-slot reclaim pass there and are
+  coverage, which the file says plainly rather than claiming a catch.
+- **Left for Rob to decide, recorded in `guard.h` so it is not rediscovered:**
+  `BanList::fail` returns false when the table is full, so a wrong staff
+  password from a ninth address is never counted and never shows in `BANS`,
+  where `LoginGuard::fail` twenty lines below answers the same question with
+  "treat as locked, hang this call up". It is not a worse guess rate than
+  before the fix, it is less visibility.
+
 ## 1.2.2-dev.2, 2026-10-05
 
 **A security fix: a full ban table could lift a live ban.** Every board, and

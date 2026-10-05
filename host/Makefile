@@ -353,7 +353,7 @@ test_since: test_since.cpp ../src/platform/platform.h
 # The ban table with every slot a running ban (1.2.2): a ninth address
 # earning a ban used to reset slot 0 and lift a real one. Needs the platform
 # for plat::since and plat::log.
-test_bans: test_bans.cpp ../src/core/guard.h ../src/core/guard.cpp platform_host.cpp
+test_bans: test_bans.cpp ../src/core/guard.h ../src/core/guard.cpp ../src/platform/platform.h ../src/config.h platform_host.cpp
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test_bans.cpp ../src/core/guard.cpp platform_host.cpp -lz -lpthread
 
 # CONFIG photos' keys against the camera's old lines (1.2.0-link.15): a

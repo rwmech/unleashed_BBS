@@ -64,9 +64,20 @@ public:
 
     // fail: count a wrong password. True if this failure started a ban.
     // False when the table is full of running bans, where the failure is
-    // not recorded at all rather than taking a live ban's slot: the caller
-    // is dropped as it would be anyway, and eight real bans are worth more
-    // than trading one of them for a ninth (1.2.2, see slotFor).
+    // not recorded at all rather than taking a live ban's slot: eight real
+    // bans are worth more than trading one of them for a ninth (1.2.2, see
+    // slotFor).
+    //
+    // **What false costs, said plainly rather than glossed:** `cmdBye` logs
+    // the caller off either way and an SSH connection is closing anyway, but
+    // the login's own sysop question (Bbs::onSysopPassword) hangs up only on
+    // a started ban, so while the table is full a wrong typed answer there
+    // is answered and not hung up. Nobody becomes staff by it, and nothing
+    // partial is recorded. The open question Rob has is whether this should
+    // instead return true the way LoginGuard::fail does twenty lines below
+    // on the same question ("treat as locked: hang this call up"), which
+    // would make two existing log lines say "banned" about a ban that was
+    // never recorded.
     bool fail(uint32_t ip, uint32_t now);
 
     // clear: forget ip (correct password or UNBAN). False if not listed.
