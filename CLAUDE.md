@@ -1740,6 +1740,69 @@ this tree.
   - **New core work:** inbound caller sessions over the link, the challenge and guest exchange, RF mode, CONFIG hamradio. About 50 B static and 4-5 KB flash. LINK.md reserves the numbers in 1.2.0.
   - **Examples use `N0CALL`,** never Rob's callsign.
   - The site marks it "planned, a while off".
+- **Reaching a board without forwarding a port: under study, 2026-10-05**
+  (Rob: "since we have the directory, what about instead of opening ports,
+  the bbs could reach out and broker the conversation"). Port forwarding is
+  the biggest barrier to running a board and anyone behind carrier-grade NAT
+  cannot do it at all, so this would widen who can run a BBS more than any
+  feature on the roadmap. The study is
+  `internal/study-broker-sat-2026-10-05.md`. Rob's decisions, settled before
+  it was commissioned so the design is built to them rather than around
+  them:
+  - **The middle carries SSH only, so it carries ciphertext only.** A
+    brokered telnet session would be readable by whoever runs the broker,
+    which is exactly the fTelnet trust problem Rob already rejected in the
+    browser-terminal entry below. This also means the cheap ESP32 is left
+    out until something changes, because SSH is S3-only: a real tension with
+    the commitment to the $15 board, and one the study has to state rather
+    than let somebody discover.
+  - **Peer to peer in preference to a broker, and a broker that is nobody's
+    in particular** (Rob: "id prefer it to be even peer to peer. With a
+    broker satellite that could be anywhere in the wild"). The same test the
+    directory's own README applies to itself: a broker nobody can replace
+    would contradict the point.
+  - **The constraint to hold in mind before designing around it:** two home
+    networks cannot simply connect. A direct path between a caller behind
+    one router and a board behind another needs hole punching, which is
+    reliable over UDP and poor over TCP, and SSH is TCP. So the expectation
+    is a ladder (a forwarded port or public address first, then a direct
+    attempt, then a broker) in which the broker relays more often than not.
+    That still removes the port-forwarding barrier, which is the actual
+    goal; whether genuine peer to peer is reachable on this hardware is an
+    open question the study answers with figures.
+  - **`.onion` is in scope and may beat the broker** (Rob, 2026-10-05: "any
+    way to do this with .onion or another privacy and freedom forward
+    method?"). It is architecturally the right shape: an onion service dials
+    out to introduction points, so there is no inbound port by construction
+    rather than by anyone's promise. Expectation, to be confirmed or
+    corrected by the study: Tor on the chip is out of reach (the directory
+    consensus is megabytes, plus TLS per relay and three-hop circuits,
+    against 180 KB of DRAM on the WROOM), and the composition that works is
+    the board reaching a sat that fronts the onion service with SSH end to
+    end, so the onion layer hides where and the SSH layer hides what and the
+    sat operator can read neither. The likely failure is usability, not
+    engineering: if reaching a `.onion` is harder for a caller than
+    forwarding a port is for a sysop, it solves nothing for the people who
+    cannot forward one. WireGuard is the other candidate worth measuring,
+    being small enough for this hardware. **Keep the three properties apart
+    in any argument about this:** confidentiality, anonymity and
+    reachability are different things, and a broker carrying SSH gives the
+    first and third and none of the second.
+  - **Open, and Rob's:** whether an onion-only unlisted mode is a thing the
+    firmware should support, given that a board listed in a public directory
+    has already published where it is.
+- **Ten SSH lines: eight today, and raising it is arithmetic** (Rob,
+  2026-10-05: "we can also do a full 10 lines ssh right?"). Queued for
+  1.2.2. `BBS_SSH_MAX` is 8 in all seven S3 profiles (`src/board.h`), and
+  that is a cap on how many of the ten caller lines may be SSH links, not a
+  separate pool: SSH callers sit on the same ten nodes, so the socket budget
+  does not move. Per link the cost is two `BBS_SSH_RING` (4 KB) rings and a
+  session budget of about 48 KB, all PSRAM, over one shared
+  `BBS_SSH_STACK` (16 KB) internal task stack, so ten looks comfortable on
+  the 8 MB boards. **The one to measure is the Makerfabs**, whose 2 MB of
+  quad PSRAM was sized at eight on purpose against the 300 KB framebuffer
+  and 128 KB kept back. Change two lines, then read internal heap low and
+  PSRAM free on each board with the lines full.
 - **Browser SSH is being BUILT** (Rob, 2026-10-04: "SSH Works, get it built", and "can't we add a ssh from the browser to connect to these sites now?"). This reverses the tabling below, which stays as the history. The plan is `internal/plan-web-ssh-2026-10-04.md`: six phases, 8.5 to 12.5 days, most of it needing no hardware. Settled with it:
   - **No staff elevation from the web, at all** (Rob, 2026-10-04: "No elevation at all from the web"). Not "no staff from an allow-listed address", which was the narrower proposal: **no caller arriving through the relay ever becomes staff**, and that does not change if the PROXY protocol is built later and their real address is known. `staffPassword` returns `Access::None` before any comparison, the same shape as "no staff over RF" and as the published default from outside. **The reason to keep it even when it looks over-careful:** the staff password's only rate limit is the address ban, three wrong in fifteen minutes, because a wrong `BYE <password>` is a plain logoff that counts nothing else. A relay address cannot be banned without locking out every browser caller, so without this rule the web is an unlimited guessing path at the one password that owns the board. Rob elevates over telnet or SSH as now.
   - **The relay runs as its own service on the droplet, behind the .com site's Caddy route**, not inside the directory. The directory's "never makes outbound connections" promise then stands exactly as written, which the 2026-09-28 research had assumed would need rewording. The site already caches the board list over loopback, so the relay needs no database access and the directory changes not one line.
