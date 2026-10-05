@@ -1878,6 +1878,35 @@ this tree.
     needs saying instead is the opposite device, a **concentrator**, which
     terminates many callers and re-originates them, reads every keystroke,
     and is the only thing that scales past twenty gateways a board.
+- **The open-AP hop CAN be encrypted, just not on our pinned IDF** (found
+  2026-10-05, after Rob read "and cannot be" in the gateway sat's README and
+  said it seemed wrong; he was right). The standard's answer to "an open
+  network that is nonetheless private" is **OWE, Opportunistic Wireless
+  Encryption, sold as Wi-Fi CERTIFIED Enhanced Open** (RFC 8110): per-client
+  CCMP keys with **no password at all**, so anybody may join and nobody
+  nearby reads anybody else's traffic. Checked across the three frameworks
+  installed here rather than recalled: `CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_SOFTAP`
+  is **absent in 5.3.1 (our pin) and in 5.5.3, present in 6.1.0**. So it is a
+  future option behind a major framework move, not an impossibility.
+  - **Two arguments had been run together, and that is what produced the
+    overclaim.** TLS is refused on *certificate* grounds (a captive portal
+    cannot be served over HTTPS without a signature nobody has, and a
+    self-signed one warns on every phone). That is a separate matter from the
+    Wi-Fi link being unencrypted, which is the framework pin. Keep them apart.
+  - OWE would be partial anyway: a phone too old for it falls back to open in
+    transition mode.
+  - **The general rule this re-earned:** prefer "does not today, because X"
+    over "cannot". This project has three recorded cases of a comment or doc
+    asserting something the code did not do and being believed, and a README
+    that says "cannot" closes an investigation somebody would otherwise do.
+  - **And what IS sealed, so nobody muddles it again:** the ESP-NOW hop is
+    encrypted and has been since 1.2.0 (our own AES-128-CCM a frame, the
+    20-byte header as associated data, keys from a P-256 ECDH confirmed by a
+    four-digit code; 93.6 us to seal and 94.7 to open on a **base** ESP32).
+    It is the same cipher and mode as 802.11's CCMP but not CCMP, which is
+    that standard's own framing of AES-128-CCM. A serial terminal's cable is
+    physical. Only the phone-to-gateway hop is in the clear.
+
 - **A live fail-open hole in the ban list, found 2026-10-05 and folded into
   the SSH-lines lane on Rob's call** (so it costs no build cycle of its own).
   `BanList::slotFor` (`src/core/guard.cpp` ~71-86) takes an empty slot, then
