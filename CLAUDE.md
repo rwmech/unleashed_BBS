@@ -1796,9 +1796,54 @@ this tree.
     in any argument about this:** confidentiality, anonymity and
     reachability are different things, and a broker carrying SSH gives the
     first and third and none of the second.
+  - **The microcontroller must be able to do it with no website** (Rob,
+    2026-10-05, and this is the binding constraint on the whole design: "Id
+    prefer it something the microcontrollers can do without a website"). It
+    rules out any board-side design needing HTTP, TLS, WebSocket or a
+    browser, and points at the board dialling out over its own small
+    protocol, which announce already does (a 1.4 KB POST, non-blocking, from
+    `tick()`, DNS on the runner). Two consumers want different things and the
+    design keeps them apart: a caller with a real SSH client wants a TCP
+    rendezvous, while a browser needs WebSocket, and the browser case is
+    already the relay in `internal/plan-web-ssh-2026-10-04.md`, not this.
+  - **The directory may be the broker, for boards listed in it** (Rob,
+    2026-10-05: "The directory server is fine to be a broker for sites listed
+    in the directory"). That settles the objection this entry was carrying,
+    that the droplet would become load-bearing for other people's boards. It
+    still has to stay replaceable, and what a hostile user could make it
+    carry is still a question the study answers.
+  - **`.onion` is an example, not a requirement** (Rob, 2026-10-05: "it
+    doesnt have to be .onion but I thought it made sense to use a framework
+    that exists already"). The instinct to honour is reusing an implemented
+    protocol rather than inventing one; the ranking test stays "can a
+    microcontroller do it".
+  - **A `.onion` directory is nearly free and a `.onion` board is not, and
+    that asymmetry is the finding** (Rob, 2026-10-05: "Id like directory
+    though to be freedom forward should someone want a .onion directory.
+    Maybe we can create a fully private .onion host of directory too?"). The
+    directory is a Python stdlib server on Linux, so Tor fronts it as a
+    hidden service from `torrc` with, as far as anyone has checked, no change
+    to `server.py`; the board is 180 KB of DRAM and cannot run a Tor client
+    at all. **So it splits by who is using it: boards announce over
+    clearnet, people read over `.onion`.** A board cannot POST to a hidden
+    service, so an onion-only directory could never take a heartbeat, and the
+    onion face is a read face for humans. That is the right half anyway,
+    because browsing a directory is what reveals your interests, while a
+    listed board has published its own address by choice.
+    **The real work is likely not the Tor config but what Tor does to the
+    per-address rules:** `group_of()`, `DIRECTORY_PER_ADDRESS` and the rate
+    limits all key on the source address, and every request through a hidden
+    service arrives from 127.0.0.1, so they collapse onto one group.
+    `DIRECTORY_TRUSTED_PROXIES` cannot save it either: Tor supplies no client
+    address to forward. Being studied with the rest.
   - **Open, and Rob's:** whether an onion-only unlisted mode is a thing the
     firmware should support, given that a board listed in a public directory
-    has already published where it is.
+    has already published where it is; and whether "a fully private .onion
+    host of directory" means a hidden face on the same database (same boards,
+    private browsing) or a separate instance with its own list of boards that
+    are not on the public one at all. The second is a different product and
+    the only one of the two that needs firmware work, since a board would
+    then need somewhere other than the clearnet directory to announce to.
 - **Ten SSH lines: eight today, and raising it is arithmetic** (Rob,
   2026-10-05: "we can also do a full 10 lines ssh right?"). Queued for
   1.2.2. `BBS_SSH_MAX` is 8 in all seven S3 profiles (`src/board.h`), and
