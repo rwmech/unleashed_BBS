@@ -48,7 +48,7 @@ apply"**, so multi-hop is in scope.
 - [7. Repeater to repeater](#7-repeater-to-repeater)
 - [8. The honest limits](#8-the-honest-limits)
 - [9. Out of scope: an ESP32 running a directory](#9-out-of-scope-an-esp32-running-a-directory)
-- [10. What Rob must decide](#10-what-rob-must-decide)
+- [10. What Rob has settled, and what is still open](#10-what-rob-has-settled-and-what-is-still-open)
 
 ---
 
@@ -500,7 +500,6 @@ The CALLIN plugin's own page, under CONFIG's four core rows:
 |---|---|---|---|---|---|---|
 | (core) | `Enabled` | — | PS_YESNO | — | **no** | restarts the plugin |
 | `max` | `Max lines` | `Caller lines link callers may take; blank is all` | PS_OPTNUM | 1..`BBS_MAX_NODES` | blank | live |
-| `staff_ser` | `Staff` | `Allow staff elevation on a wired terminal line` | PS_YESNO | — | **no** | live |
 | `name_as` | `Shown as` | `What WHO and the caller log show for a link caller` | PS_CYCLE | `sat\|sat+kind` | `sat` | live |
 
 And **per pairing**, on `CONFIG sat <name>`:
@@ -508,7 +507,23 @@ And **per pairing**, on `CONFIG sat <name>`:
 | Key | Label | Wide | Kind | Default | When |
 |---|---|---|---|---|---|
 | `callers` | `Callers` | `Take callers in from this sat` | PS_YESNO | **no** | live |
+| `staff` | `Staff` | `Staff may elevate on this sat's wired line` | PS_YESNO | **no** | live |
 | `console` | `Console` | `This sat's wired line is the sysop console` | PS_YESNO | **no** | next restart |
+
+**`staff` is per pairing and not board-wide, which amends my own first
+draft of this page.** The draft had one `staff_ser` row on the CALLIN
+plugin's page. It is wrong, and §4.5 is why: what the board is trusting is
+**custody of a particular box**, so the switch has to point at a box. A
+sysop can then allow staff from the terminal in the hall and refuse it from
+the one in a field, which a single board-wide switch cannot express.
+
+**`console` lines still ask for the staff password**, once, with an idle
+lock after, which is not a new decision: CLAUDE.md's keyboard-sat entry
+already settled exactly this shape for a local terminal, "one sysop
+password to unlock then an idle lock". So a console line is an ordinary
+wired line that lands on the hidden sysop node instead of a caller node,
+and it meets §4.5's test and §4.6's rate limit like any other. One rule,
+not two.
 
 **`console` is the board's flag and never the node's claim, and that is
 forced rather than chosen.** LINK.md's security rules say "Nothing a peer
@@ -519,14 +534,15 @@ board names the pairing whose wired line lands on the hidden sysop node,
 which is also the 1.2.3 decision ("the console line should use the sysop
 hidden line") implemented without breaking the rule.
 
-**`staff_ser` exists and `ap_staff` does not, and the asymmetry is the
-point.** An access-point caller is an anonymous phone on an open network
+**A per-pairing `staff` row exists and an `ap_staff` row does not, and the
+asymmetry is the point.** An access-point caller is an anonymous phone on an open network
 whose address cannot be banned, so no staff, ever, in the core (§8). A
 wired terminal caller had to be standing at a node the sysop planted and
 paired, which is the same trust LINK.md already grants the serial
 transport ("trusted by the wire: no pairing and no sealing... whoever can
 plug into the board's UART already has the board") one box further out. So
-it is offered, off by default, and the note says what it means.
+it is offered, off by default, per box, and gated by a test the board can
+actually run (§4.5) and a limit it can actually count (§4.6).
 
 ### 4.4 The caller-visible lines
 
@@ -544,6 +560,202 @@ is the only CALLIN path that is private end to end**: a wire the sysop ran,
 then AES-128-CCM on every frame. Saying "not encrypted" there would be
 wrong in the one place this project could honestly say otherwise. Final
 copy is `explain`'s.
+
+### 4.5 Staff on a wired line: the test
+
+Rob, 2026-10-05: **"only allowed of secure on wired terminal. rate limits
+apply"**. Read as three things, and the reading is stated so it can be
+corrected:
+
+1. **No staff over an access-point line.** Confirmed policy now, as well as
+   forced by §8.
+2. **Staff over a wired terminal line, but only while the path is secure end
+   to end.** "Secure" is a property the board must **test**, not an
+   adjective it assumes.
+3. **Rate limits apply**, which is new work, in §4.6.
+
+**`Bbs::callinStaffAllowed(const Session&)`, in `src/core/bbs_shell.cpp`
+beside `staffPassword`, called by `staffPassword` before any comparison.**
+It returns false unless **all** of these hold, and false on anything it
+cannot determine, because this is authority and authority fails shut:
+
+| # | The test | Why it is testable rather than asserted |
+|---|---|---|
+| 1 | The line is a CALLIN line (`Session::link`, 1.2.3). A socket, SSH or the board's own serial line is not this test's business | the discriminator 1.2.3 already specifies |
+| 2 | **The link hop is sealed, or it is the board's own cable.** A radio pairing is AES-128-CCM on every frame with the 20-byte header as associated data, under a `k_link` from a P-256 ECDH that two sysops confirmed with a four-digit code. LINK.md's serial transport is **not** sealed (`SEC` is never set on serial) and does not need to be: it is "trusted by the wire", a cable into the board's own UART | both are checkable facts about the transport the frame arrived on, not claims inside it |
+| 3 | **The sat reports no access point running.** Not "this line says it is wired": a per-line claim is a frame asking for authority, which LINK.md forbids. A sat with the access point role off has no anonymous callers to confuse a wired one with, and that is a property of the device the sysop can also verify by looking at the box | the role report is sealed under `k_link`, so it is as authentic as anything else from that sat; and `CONFIG sat <name>` shows the sat's roles on the very form where the sysop sets `staff`, so a sat with an access point on is visibly refused rather than silently trusted |
+| 4 | The board's own per-pairing **`staff` flag is yes** (§4.3) | the board's setting, never the peer's claim |
+| 5 | §4.6's counter has not tripped for this pairing | — |
+
+**A repeater in the path does not disqualify, and that corrects the
+coordinator's reading.** A relayed frame is exactly as secret as a direct
+one: the repeater forwards sealed frames it cannot open, holds no key for
+the traffic, and can drop or delay a frame and do nothing else. And a
+repeater **cannot** terminate a session, which §7 shows is forced rather
+than policy. So hops add nothing to the secrecy question, and the thing
+that actually matters is custody of the far sat rather than how many boxes
+the bytes crossed.
+
+**What the test does not prove, said plainly because it is the real
+limit: it proves the path's secrecy, not the node's custody.** A stolen
+gateway sat still holds its `k_link`, so a thief's wired line passes every
+one of the five tests. Nothing cryptographic can tell a sat in the sysop's
+hallway from the same sat in a thief's van. That is the same shape as "a
+concentrator somebody else plants reads your passwords" and as "whoever can
+plug into the board's UART already has the board", and the answer is the
+same: **custody is physical, and the lever is the per-pairing switch** plus
+§4.6's limit, which is what caps what a thief can do with it to three
+guesses a quarter of an hour.
+
+### 4.6 The rate limit for a line with no address
+
+The existing scheme is `BBS_BAN_TRIES` 3 wrong staff passwords inside
+`BBS_BAN_WINDOW_MS` 15 minutes, banning that address for `BBS_BAN_MS` 15
+minutes, in `BBS_BAN_SLOTS` 8 fixed slots keyed on a `uint32_t ip`
+(`src/core/guard.h:85`, `src/config.h:191-194`). **A CALLIN caller has no
+address.** So:
+
+**It keys on the pairing, and the reason is better than "there is nothing
+else".** An address is an **unauthenticated** identity: anybody may pick
+one, which is precisely why the existing ban is a blunt fifteen minutes and
+why a relay's address cannot be banned without locking out every caller
+behind it. **A pairing is an authenticated one**: every frame under it is
+sealed with a key from an exchange two sysops confirmed by comparing a
+four-digit code, with a replay window over the packet numbers. So a pairing
+is a *stronger* identity to rate-limit than an IP, not a weaker one.
+
+**The attack each candidate resists or does not:**
+
+| Key | Resists | Fails to |
+|---|---|---|
+| the individual line | nothing | a troublemaker hangs up and calls again on a new line. **Free. Rejected** |
+| **the pairing** | the free reset, and every reset short of a physical act at the board: adding a pairing takes `LINK PAIR` at the board and a code compared at both ends, inside a short window. **Chosen** | distinguish a stolen sat from an honest one (§4.5), which no key can |
+| the sat's MAC | nothing it should: a MAC is forged trivially, and LINK.md already records that a peer is identified before dispatch rather than by its MAC | — |
+| board-wide | the same attacks the pairing key does | **it hands a troublemaker a way to lock the sysop out of his own board** with three wrong guesses. Rejected |
+
+**Which failure I prefer, since the coordinator is right that both horns
+exist.** The pairing key's failure is "a sysop who deliberately pairs a
+second sat gets a second allowance". The board-wide key's failure is "any
+stranger can refuse the sysop staff access". **Those are not comparable.**
+The first requires the sysop's own cooperation at the board, which makes it
+a choice rather than an attack; the second is a denial of service a
+troublemaker performs on the person the mechanism exists to protect. So the
+pairing wins, and the project's precedent agrees in both directions: fail
+shut on **authority** (a tripped pairing gets no staff) and fail open on
+**access** (its callers keep calling), which is exactly how a wrong
+`BYE <password>` is a plain logoff rather than a disconnection until the
+third one.
+
+**What trips, and what it does.** Three wrong staff passwords on one
+pairing's lines inside fifteen minutes, counted together across every line
+of that sat (not per line: per line is the free reset above). On tripping,
+**staff elevation is refused on that pairing for fifteen minutes. The
+callers are not refused and the sat is not unpaired.**
+
+- refusing the callers would let anybody at a terminal in a hallway take out
+  that sat's whole gateway, the sysop's own console line included, by
+  typing three wrong passwords. That is the lock-the-sysop-out failure
+  scoped down to one box, and it is still the wrong failure;
+- refusing the line is pointless, since a troublemaker simply takes
+  another;
+- and refusing staff is the minimum that stops the attack and costs nothing
+  else. **The asymmetry with an address ban is deliberate and worth the
+  sentence:** an address is one of billions and banning one costs the board
+  nothing, so the address path bans the connection; a pairing is one of
+  eight and each one cost a sysop a physical act, so banning it is
+  expensive and a troublemaker would be the one choosing to spend it.
+
+**Where it lives, and what it costs. A table of its own, `SatGuard` in
+`src/core/guard.h`, indexed directly by the peer slot**, so the index *is*
+the key and there is no key field and no lookup:
+
+```
+struct Entry { uint32_t firstFail; uint32_t until; uint8_t fails; uint8_t ahead; };
+Entry slots_[Engine::kPeers];
+```
+
+10 bytes, 12 with Xtensa's alignment, so **96 bytes of static DRAM at
+`kPeers` 8**, and 240 if phase 5 raises `kPeers` to 20. `fails`, the window
+and `until` behave exactly as `BanList`'s do, and `plat::since` is used for
+every elapsed comparison, per the 1.2.1 rule.
+
+**The cheaper alternative was rejected, and finding out why found a
+pre-existing bug.** The zero-byte option is to key a pairing into the
+existing `BanList` as a pseudo-address, `ip = 1..kPeers`, since `0.0.0.0/8`
+is never a valid source address and `peerAddr` cannot produce one; then
+`slotFor`, `fail`, `banned`, `clear` and the window all work untouched.
+**But `BanList` evicts**, and the eviction is not safe for authority:
+
+```
+src/core/guard.cpp:71-86   BanList::slotFor
+    ... oldest = the oldest entry with until == 0  ...
+    slot = empty ? empty : (oldest ? oldest : &slots_[0]);
+    *slot = Entry();
+```
+
+With all eight slots carrying **active** bans, `empty` and `oldest` are both
+null and the fallback is `&slots_[0]`, which is then reset: **an active ban
+is silently cleared.** For a pairing entry that would silently restore staff
+access, which fails open on authority and is the shape this project calls a
+bug. A table of one entry a pairing cannot overflow by construction, which
+is why 96 bytes is the right 96 bytes.
+
+**And that eviction is a real pre-existing hole on the address path too,
+independent of this feature**: nine distinct addresses banned inside one
+fifteen-minute window silently un-ban the oldest-indexed one. `BBS_BAN_SLOTS`
+is 8, three wrong passwords each, so it takes 27 wrong passwords from nine
+addresses to reach it. Low severity and genuinely reachable. **Reported for
+the code-review queue, not fixed here.**
+
+**It does not survive a reboot, and that is the precedent rather than
+laziness.** `BanList` is documented "RAM only, a reboot clears it" and
+`LoginGuard` as "failures never write to flash", and the reason is worth
+keeping: a guesser who could make the board write flash on demand would have
+a flash-wear attack and a Rule no. 1 problem for free. A reboot clears it,
+and a troublemaker who can power-cycle the board has physical access and has
+already won — which is the argument the existing ban already rests on.
+
+**A sysop clears it the way `UNBAN` clears an address, through `UNBAN`.**
+`cmdUnban` tries `ipFromText` first and already fails cleanly on anything
+that is not a dotted quad, so the fallback is natural: look the argument up
+as a sat by name or by its `LINK` number. One verb, no new command, and
+symmetric with `BANS` listing both. Usage becomes
+`UNBAN a.b.c.d, or UNBAN <sat>` (36 columns, fits 40).
+
+**What `BANS` shows for an entry with no address.** The list is 17 columns
+of key and 8 of minutes (`Banned IP        Min left`, `rowBans` in
+`bbs_sysop.cpp:538`). A pairing entry takes the same column, with the sat's
+name prefixed by `@`:
+
+```
+Banned           Min left
+192.168.0.37           12
+@shed                   9
+@ = a sat: no staff, callers OK
+```
+
+- the header's "IP" drops, the column width does not move, so nothing else
+  on the row shifts;
+- `@` because a sat name is `char name[16]` and `@` plus 15 characters is
+  exactly the 16 the column holds, and because `@` exists in ASCII, PETSCII
+  and CP437 alike, which is the same reason the inline codes use it;
+- the footnote is the `* guest  > CO-SYSOP  ] SYSOP` pattern already under
+  the lists, and it carries the one thing the row cannot: that a sat entry
+  refuses staff while an address entry refuses the connection. 31 columns at
+  40; at 80, `@ = a sat, not an address: staff is refused there, callers
+  still get in` (70).
+
+**Two things that need no new work at all**, and are worth recording so
+nobody builds them twice:
+
+- **the per-handle account lockout already covers CALLIN callers**, because
+  `LoginGuard` keys on the handle: five wrong account passwords in fifteen
+  minutes locks that handle whatever line it came in on. So account
+  passwords on a gateway line are protected exactly as well as over telnet;
+- **the SyncTERM typeahead allowance carries straight over.** `aheadTake`
+  is one held answer per key per window, and the `ahead` byte is already in
+  the `Entry` above, so a wired terminal that sends a burst gets the same
+  single uncounted held answer a telnet caller does, keyed on its pairing.
 
 ---
 
@@ -571,7 +783,12 @@ proposing. Counts are case-insensitive whole-word hits.
 | `exchange` | several | Taken: key exchange |
 | `outpost`, `kiosk`, `waypoint` | 0 | Free, and not needed |
 
-**Settled:**
+**Settled by Rob, 2026-10-05, exactly as proposed below.** The reasoning he
+accepted is that a word he uses unprompted for a thing is that thing's word,
+which is what reverses the broker study. **The strings live in
+`src/core/satwords.h`** for the sat vocabulary, and in a sibling
+**`src/core/reachwords.h`** for the broker's, since a broker is not a sat
+and `satwords.h` is kept for boxes on the link.
 
 - **The device is a gateway sat.** Kind id **3**, already reserved in
   LINK.md and in `link.h:149` ("3 is reserved for 1.3.0's gateway kind
@@ -615,8 +832,7 @@ Rob uses for a thing is that thing's word. So:
   over ESP-NOW or a serial line. A broker is none of those. Its words belong
   in a sibling `reachwords.h`, not in `satwords.h`.
 
-This is one line for Rob to confirm and it costs nothing today and a rename
-later.
+**Confirmed by Rob on the day it was proposed**, so it costs nothing at all.
 
 ---
 
@@ -665,7 +881,10 @@ The study's phase 1 was a dedicated AP box with no roles and no switches.
 **Most of it survives; what changes is the architecture, and that change is
 the whole point of Rob's correction.**
 
-**Phase 1, 5 to 7 days, new node repository, no core change at all:**
+**Phase 1, 6 to 8.5 days, new node repository, no core change at all.**
+Rob approved starting it, and approved the terminal server inside it, on
+2026-10-05; the figure is the study's 4-to-6-day access-point phase plus 1
+to 1.5 days for the terminal server plus the framework.
 
 - the node firmware with **the three-switch framework in place from the
   first commit**: one caller-stream abstraction, two sources implemented
@@ -674,11 +893,11 @@ the whole point of Rob's correction.**
   the framework now is what stops this becoming the two-box design again;
 - the **access point role**: open SoftAP, DHCP, the DNS redirector, the
   portal, the board list, xterm.js over a WebSocket;
-- the **terminal server role**, which is the cheapest possible proof that
-  the roles really are switches over one core: a UART feeding the same
-  abstraction the WebSocket does. **1 to 1.5 days on top, and it buys rows 1
-  and 4 immediately and tests the one design claim phase 1 exists to
-  test**;
+- the **terminal server role** (**approved into phase 1 by Rob**), which is
+  the cheapest possible proof that the roles really are switches over one
+  core: a UART feeding the same abstraction the WebSocket does. **1 to 1.5
+  days on top, and it buys rows 1 and 4 immediately and tests the one design
+  claim phase 1 exists to test**;
 - the **IP uplink**: a plain telnet connection to the board's own address,
   because the board joins the node's access point as a station (row 8) or
   both sit on a router (row 12). **No link, no CALLIN, no pairing, no new
@@ -704,10 +923,11 @@ reachability from the internet and is being built in its own worktree; it
 touches no node, no role and no CALLIN, and the two do not block each other
 in either direction.
 
-### 6.3 The phases after it
+### 6.3 The phase table
 
 | # | What | Repo | Days | Needs |
 |---|---|---|---|---|
+| **1** | **The local gateway** (§6.2): the three-switch framework, the **access point** role, the **terminal server** role, the **IP uplink**, the node's own setup page. No link, no CALLIN, no pairing, **no core change**. Rows 8, 12, and rows 1, 4 and 14 over an IP uplink | node | **6 to 8.5** | one ESP32, one board, one phone, one terminal. **Approved, starting** |
 | **2** | **Measure phase 1.** Echo p50 and p95 on a real phone, screen on and off; DTIM 1 against 2; the portal on iOS, Android and Windows, with and without Private DNS, and specifically whether a recent Samsung pops it at all; whether the Apple sheet runs a WebSocket or the terminal must open in the real browser; how many phones hold a terminal; **the heap on a base ESP32 with no PSRAM, with all the roles phase 1 has on**; whether an idle association is ever reaped | — | **1 to 2** | Rob's phone. **Needs his explicit go** |
 | **3** | **The caller-line core and CALLIN** (1.2.3 as planned) plus §6.1's small core items. Rows 1, 4, 15 | core | **5 to 8** | host, one bench flash |
 | **4** | **The link uplink on the node**: CALLIN instead of telnet, several boards on the portal, busy handling, and a clean `CLOSE` when a phone disassociates so a walked-away caller frees a line in a second rather than in minutes. Rows 3, 11 | core + node | **4 to 6** | two ESP32s, one board |
@@ -900,14 +1120,23 @@ new research.
   without this rule an open access point is an unlimited guessing path at
   the one password that owns the board. So `staffPassword` returns
   `Access::None` before any comparison, the same shape as "no staff over RF"
-  and "no staff from the relay". **This is now a general rule rather than a
-  web-SSH one and belongs in CLAUDE.md as one:** a caller whose line cannot
-  be attributed to a bannable address is never staff.
+  and "no staff from the relay". **Confirmed as policy by Rob, 2026-10-05**,
+  as well as forced. An access-point caller who types `BYE <something>` gets
+  the plain logoff a guest gets, with nothing counted anywhere, because
+  nothing was compared.
+- **The general rule this makes, which belongs in CLAUDE.md as one:** a
+  caller whose line cannot be attributed to a bannable address is never
+  staff **unless the board can test that the line is private end to end and
+  limit it on an authenticated identity**. The second clause is new: the
+  wired terminal line is the first path that can satisfy it (§4.5, §4.6),
+  and it satisfies it because a pairing is a stronger identity than an
+  address rather than a weaker one.
 - **What still works** for a gateway caller: the per-handle account lockout,
   five wrong in fifteen minutes, because it keys on the handle; and `KICK`,
   because it acts on a node. **What does not**: anything keyed on an
-  address. A sysop's lever against a troublemaker is the per-pairing
-  `callers` switch (§3.4), which is cheap and is why it exists.
+  address, which is why §4.6 keys on the pairing. A sysop's levers against a
+  troublemaker are the per-pairing `callers` and `staff` switches (§3.4,
+  §4.3) and `UNBAN <sat>`.
 - **The caller log and WHO show the node's name**, because that is the
   actionable fact for a sysop ("three bad logins from the gateway by the
   beer tent"), marked the way a guest is marked with `*`.
@@ -960,58 +1189,54 @@ agreed to this" before it fills one.
 
 ---
 
-## 10. What Rob must decide
+## 10. What Rob has settled, and what is still open
 
-**Before phase 1:**
+### Settled by Rob, 2026-10-05
 
-1. **The words** (§5). Recommended: the device is a **gateway sat**, kind 3,
-   shown as `gateway`; the repository is `unleashed_callin`, keeping his own
-   word where camsat keeps its; the roles are **access point**, **terminal
-   server** and **repeater**, his own three; the page is the **portal**; and
-   **the internet-side box becomes the broker**, reversing the broker
-   study's §5.2 because he has now used "repeater" twice for the radio role
-   and a word he uses is the word. One line.
-   - If he would rather the device were called a **callin sat** on screen
-     too, that also works and costs only `satwords.h`; what cannot stay is
-     "node", which is a caller line everywhere in the tree.
-2. **The terminal server in phase 1** (§6.2). Recommended yes: 1 to 1.5 days
-   on top, it buys rows 1 and 4 at once, and it is the only cheap proof that
-   the roles really are switches over one core rather than three programs in
-   a trench coat.
-3. **Phase 2's test plan needs his explicit go**, per the standing rule.
+1. **The words** (§5), exactly as proposed: **gateway sat**, kind 3, shown
+   as `gateway`; the repository `unleashed_callin`; the roles **access
+   point**, **terminal server**, **repeater**; the page the **portal**; and
+   **the internet-side box is the broker**, reversing the broker study's
+   §5.2. Strings in `satwords.h`, and the broker's in a sibling
+   `reachwords.h`.
+2. **The terminal server is in phase 1** (§6.2), so phase 1 is **6 to 8.5
+   days**.
+3. **Staff elevation**, from "only allowed of secure on wired terminal. rate
+   limits apply": no staff on an access-point line; staff on a wired
+   terminal line only while the board's five-part test passes (§4.5); and a
+   rate limit keyed on the pairing (§4.6).
+4. **A board opts in to being gatewayed, off by default and per pairing**
+   (§3.4), because pairing consents to a device and not to a purpose, and
+   the per-pairing flag is the only lever against a troublemaker when
+   nothing keys on an address.
+5. **`console` stays the board's per-pairing flag and never the node's
+   claim** (§4.3).
 
-**Before phase 3:**
+### Still open
 
-4. **No staff elevation on an access-point line** (§8). I believe it is
-   forced rather than optional, and the precedent is his own decision of
-   2026-10-04, but it is his to confirm because it means he cannot elevate
-   from his own phone at his own board.
-5. **Staff allowed on a wired terminal line, off by default** (§4.3). The
-   asymmetry with the point above is deliberate: whoever is at the terminal
-   had to be standing at a box he planted and paired, which is LINK.md's
-   "trusted by the wire" one box further out. Recommended yes.
-6. **A board opts in to being gatewayed, off by default, and per pairing**
-   (§3.4). Recommended yes, in the spirit of "a board is closed until its
-   sysop opens it".
+6. **Phase 2's test plan needs his explicit go**, per the standing rule.
 7. **The wording** for the portal's open-access-point line and the board's
    two connection lines (§4.4). Mine are a starting point; `explain` owns
    the copy.
-
-**Before phase 7:**
-
-8. **Two hops as the setting, three as the format** (§7). Recommended, so a
-   bench can try three without a protocol change. The cap is for airtime and
-   repair, not latency.
+8. **Two hops as the setting, three as the format** (§7), before phase 7.
+   Recommended, so a bench can try three without a protocol change. The cap
+   is for airtime and repair, not latency.
+9. **The pre-existing `BanList` eviction hole** found while costing §4.6:
+   with all eight slots carrying active bans, `slotFor`'s fallback resets
+   `slots_[0]` and silently clears an active ban, so nine addresses banned
+   inside one window un-ban the first. Low severity, genuinely reachable,
+   nothing to do with this feature. **For the code-review queue.**
 
 **Not this spec's, and his to schedule:**
 
-9. **The 16-socket ceiling is a property of the pinned framework, not of the
-   chip.** `LWIP_MAX_SOCKETS` is `range 1 16` at IDF 5.3.1 and `range 1 253`
-   from 5.3.2, verified from two frameworks on this machine (study §0). It
-   changes nothing a CALLIN line needs, since a CALLIN line is not a socket,
-   but it does change the sentence CLAUDE.md carries, and a framework bump
-   is its own piece of work with its own 23-environment revalidation.
-10. **An ESP32 running a directory** (§9), which he has already separated
+10. **The 16-socket ceiling is a property of the pinned framework, not of the
+    chip.** `LWIP_MAX_SOCKETS` is `range 1 16` at IDF 5.3.1 and
+    `range 1 253` from 5.3.2, verified from two frameworks on this machine
+    (study §0). It changes nothing a CALLIN line needs, since a CALLIN line
+    is not a socket, but it does change the sentence CLAUDE.md carries, and
+    a framework bump is its own piece of work with its own 23-environment
+    revalidation.
+11. **An ESP32 running a directory** (§9), which he has already separated
     out.
 
 **Answered, so he need not decide:** whether a base ESP32 can be the node
@@ -1046,6 +1271,10 @@ specification is new research.
 - `src/core/link.h` — `kPayloadMax` 222, `kPeers` 8, `kHosts` 5,
   `kSessions` 16, `kPingMs`, `kHostQuietMs`, `kAckDelayMs`, `kRtoMs`,
   and `KIND_*` with 3 reserved by comment.
+- `src/core/guard.h`, `src/core/guard.cpp` and `src/config.h:191-194` — the
+  ban list's address key, its eviction, `aheadTake`, and
+  `BBS_BAN_SLOTS`/`TRIES`/`WINDOW_MS`/`MS`; `src/core/bbs_sysop.cpp:538`
+  and `:775` — `rowBans`' columns and `cmdUnban`'s parsing.
 - `src/core/satwords.h` — the settled sat vocabulary this spec extends.
 - `src/config.h`, `src/core/bbs.h`, `src/core/guard.h`,
   `src/core/plugin.h`, `src/core/form.h` — `BBS_MAX_NODES`, the
