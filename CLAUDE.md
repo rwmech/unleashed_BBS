@@ -1919,14 +1919,82 @@ this tree.
     service arrives from 127.0.0.1, so they collapse onto one group.
     `DIRECTORY_TRUSTED_PROXIES` cannot save it either: Tor supplies no client
     address to forward. Being studied with the rest.
-  - **Open, and Rob's:** whether an onion-only unlisted mode is a thing the
-    firmware should support, given that a board listed in a public directory
-    has already published where it is; and whether "a fully private .onion
-    host of directory" means a hidden face on the same database (same boards,
-    private browsing) or a separate instance with its own list of boards that
-    are not on the public one at all. The second is a different product and
-    the only one of the two that needs firmware work, since a board would
-    then need somewhere other than the clearnet directory to announce to.
+  - **The study is in: `internal/study-broker-sat-2026-10-05.md`** (1,655
+    lines, written 2026-10-05; it committed onto the `ssh-lines` branch
+    because that lane had the shared checkout, and reaches main with that
+    merge). What it settled:
+    - **Peer to peer is unavailable, not unreliable, and the reason is not
+      NAT statistics.** Hole punching needs code at BOTH ends and the far
+      end is PuTTY, OpenSSH, SyncTERM or a machine on a serial line; the
+      mapping must be made by the host behind the far NAT, so the board
+      cannot do it for anyone. **Build no hole punching, ever.** For
+      reference, even with cooperating clients the best measurement (DCUtR
+      in IPFS, 6.25M attempts) is about 50% end to end, TCP and QUIC alike.
+    - **"Without a website" is already satisfied:** the rendezvous is three
+      optional headers on the announce reply the board already sends, and
+      the existing announce token is already the credential, so there is no
+      new pairing, no TLS, no WebSocket and no new stack. `LINK.md` already
+      reserves family 3 CALLIN and peer kind 3 `gateway`; the broker is
+      that with TCP instead of ESP-NOW.
+    - **The name is `repeater`**: a ham term, ASCII, unused anywhere in
+      `src/`, `tools/` or `host/`, and it carries the right expectations for
+      free, since repeaters are plural, nobody owns "the" repeater, and
+      every ham knows the operator hears what you transmit. Not a sat (a
+      caller comes *through* it, not into it) and "relay" is taken.
+    - **An ESP32 cannot be a repeater**: it needs a public address, holds
+      eleven sockets a board and must be up more than the boards it serves.
+      It does not contradict the core value, because it moves ciphertext
+      and makes no BBS decision.
+    - **Tor costs 260-720 ms of circuit latency** (OnionPerf medians)
+      against the bench's 4 ms p50 keystroke echo, so `.onion` is a mode a
+      sysop chooses rather than the answer.
+    - **The defect in the naive onion face, which would have shipped:** a
+      single process serving both faces **redirects a Tor Browser to the
+      clearnet `.com`** on `/install`, `/static/` and `/pix/`, because the
+      absolute URLs and `HOME_URL` 301s are frozen at import. The fix is a
+      second systemd unit with its own `DIRECTORY_PORT`, `DIRECTORY_URL` and
+      an empty `HOME_URL`: config, not code. The per-address collapse is a
+      four-line guard (`DIRECTORY_READ_ONLY=1`: refuse `/announce`, omit
+      `X-Seen-Address`, skip `settle()` on reads), because the onion face
+      need not serve announce at all. One database, two processes, already
+      WAL.
+    - **Confirmed: boards announce over clearnet, people read over
+      `.onion`.** It hides readers, not boards, and the site copy must say
+      so because the natural assumption is the opposite. The two compose: a
+      board whose listed host is itself an onion is on neither face.
+    - **Host-key trust on first use is the one real hole**, a broker being
+      exactly placed to impersonate a board to a first-time caller. Fix:
+      `host_key_sha256` in `PROTOCOL.md`, sent by announce, shown on the
+      listing, after which the directory is trusted for exactly one thing.
+      Rob brokering on his own directory makes both parties the same party,
+      which argues for a third-party broker or an out-of-band fingerprint.
+      **No staff over a broker**, the same rule as no staff over RF.
+    - **IPv6 crossed 50% at Google on 2026-03-28, and a global address is
+      still not inbound reachability**: RFC 7084 and 6092 make residential
+      CPE default-deny, so it is the same router menu minus the NAT. Costs
+      1,888 bytes, off since 1.1.1.
+    - **Nobody has published how often UPnP is enabled.** Instrumenting it
+      would make this project the owner of a figure that does not exist.
+    - **Tor on the chip is refused as a responsibility decision, not a size
+      one**: Minitor exists (GPL-2.0, last pushed 2023, a forked wolfSSL,
+      about 300 s to fetch a consensus), and shipping anonymity on that is
+      not a thing to do on somebody's say-so.
+  - **Rob's decisions on the study, 2026-10-05:**
+    - **Port mapping goes ahead of the broker** (NAT-PMP, PCP, UPnP, 3 to 5
+      days): no component in the middle at all, and **the only item on the
+      list that helps the base ESP32**, which is why it outranks a broker on
+      both of his words. It does nothing under CGNAT and that is accepted.
+    - **"Fully private .onion directory" means both, eventually**: the
+      private face on the same list falls out of the read face for free, and
+      an invitation-only instance with its own database (v3 client auth,
+      invisible except to an invited circle) is its own later item once the
+      first is working.
+    - **Nothing starts until the AP gateway study lands**, the onion read
+      face included, so the two plans can be read side by side.
+  - **Open, and Rob's:** whether onion-only-and-unlisted is a supported
+    firmware mode; whether 260-720 ms of echo is acceptable and said on the
+    listing; and whether SyncTERM speaks SOCKS, which the study could not
+    establish either way and which one download settles.
 - **Ten SSH lines: eight today, and raising it is arithmetic** (Rob,
   2026-10-05: "we can also do a full 10 lines ssh right?"). Queued for
   1.2.2. `BBS_SSH_MAX` is 8 in all seven S3 profiles (`src/board.h`), and
