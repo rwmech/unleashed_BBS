@@ -2026,6 +2026,9 @@ this tree.
     for nothing. It follows the kept-free-space pattern instead: probed on
     demand, the result remembered and shown on the row with an "as of",
     re-probed by `PORTMAP TEST`.
+  - **On the sysop menu** (Rob, 2026-10-06: "make sure its in the sysop
+    menu"), beside `PORTMAP`, rather than being a verb somebody has to know
+    exists. Same `Menu::Sysop` placement and `CF_SYSOP` flag.
   - It reports which protocol answered and the outside address, and
     therefore gives the **carrier verdict for free** — which is the one
     thing nothing else on the reachability ladder can tell a sysop, and it
