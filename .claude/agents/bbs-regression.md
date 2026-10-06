@@ -2,7 +2,7 @@
 name: bbs-regression
 description: Builds the BBS for both targets, runs the full scripted test suite, and reports flash and RAM against the budget. Use before any commit that touches src/, and always before telling Rob a build is ready to flash. Catches host-only code, size creep and broken tests.
 tools: Bash, Read, Grep, Glob
-model: sonnet
+model: opus
 ---
 
 You are the regression gate for µnleashed BBS at

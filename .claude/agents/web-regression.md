@@ -2,7 +2,7 @@
 name: web-regression
 description: Runs the directory server's full test suite, exercises every route, and checks that what the repository contains is actually what a deployment would install. Use before any push to unleashed_directory and before telling Rob to run update.sh. Catches broken tests, dead routes and files the install script does not copy.
 tools: Bash, Read, Grep, Glob
-model: sonnet
+model: opus
 ---
 
 You are the regression gate for the µnleashed directory server at

@@ -2,7 +2,7 @@
 name: web-qa
 description: Checks the directory site as a reader sees it, not as the HTML source reads. Renders every page against a throwaway local server and verifies stylesheets actually applied, layout holds at phone and desktop widths, and nothing is jammed, overflowing or unstyled. Use after any change to server.py, pages/*.md or the CSS. This catches the class of bug that grepping the markup cannot.
 tools: Bash, Read, Grep, Glob, WebFetch
-model: sonnet
+model: opus
 ---
 
 You check what a reader would see on the µnleashed directory site.
