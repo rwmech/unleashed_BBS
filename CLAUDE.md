@@ -1994,6 +1994,43 @@ this tree.
   - Same shape as the queued plugin on/off item: the fact is in hand and
     simply not shown at the moment somebody needs it.
 
+- **1.2.2 rescoped by Rob, 2026-10-06.** What stays, what moves, and one
+  new item.
+  - **In 1.2.2:** ten SSH lines with `ssh_lines`; the two ban fixes (the
+    fail-open table and the 24.86-day resurrection); port mapping with all
+    three protocols, proven on a real router; **`ssh_port` in announce**, so
+    the directory's padlock can appear at all; the **32-hex token refusal**
+    (the bug that queued HQ); **plugin on/off in CONFIG's page list**; and
+    **`PORTMAP TEST`**, below.
+  - **Moved to 1.3:** themes, the hamburger menu on touch panels, the 4.3B
+    panel alignment pass.
+  - **Moved out of any version:** the screen redesign. Specified in
+    `internal/screens-copy-2026-10-01.md` and
+    `internal/screens-style-2026-10-01.md`, and nobody has drawn anything.
+  - **Not placed, both small:** lurk looking like a hangup, and the
+    info-page form not saying where the body is written.
+- **`PORTMAP TEST`: is my router compatible, without opening anything**
+  (Rob, 2026-10-06: "is there a 'test' that can be run to see if a router is
+  compatable ... have it reported in config_board if its something we can
+  test just in time"). In 1.2.2.
+  - **It works because all three protocols have a read-only query that
+    creates no mapping**: NAT-PMP's public-address request, PCP's ANNOUNCE,
+    and UPnP's SSDP discovery plus `GetExternalIPAddress`. So a sysop can
+    find out whether their router answers **without the feature being on and
+    without a port being opened**, which is the whole point: today the only
+    way to know is to switch it on.
+  - Two of the three are already implemented, because the board uses them
+    for the carrier verdict.
+  - **Not probed on every CONFIG open.** Rob asked for just-in-time; the
+    answer for a given router is stable, so a probe per page open is cost
+    for nothing. It follows the kept-free-space pattern instead: probed on
+    demand, the result remembered and shown on the row with an "as of",
+    re-probed by `PORTMAP TEST`.
+  - It reports which protocol answered and the outside address, and
+    therefore gives the **carrier verdict for free** — which is the one
+    thing nothing else on the reachability ladder can tell a sysop, and it
+    can now be had without opening a port at all.
+
 - **CONFIG's page list should show each plugin on or off** (Rob,
   2026-10-05: "Config should show on/off for plugins from config"; queued
   for the next time the BBS code is open, not started). Cheap: `configPages`
