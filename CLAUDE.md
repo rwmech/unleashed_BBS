@@ -1774,11 +1774,51 @@ this tree.
     gonna add a fucking space" and "/p10 should work, it better work".
   - **Settling the addressing now is the point, because the link inherits
     it** (Rob: "when you connect ddial up eventually its going to have this
-    same limitation"). Whether the hidden sysop line should also *show* as
-    0 rather than `S` is Rob's call off
-    `internal/research-ddial-line-numbering-2026-10-06.md`, which asks what
-    DDial and GTalk actually numbered their console and their linked
-    stations.
+    same limitation").
+  - **The research is in, and both originals back Rob twice**
+    (`internal/research-ddial-line-numbering-2026-10-06.md`, 2026-10-06):
+    - **The console was 0 in both, never a letter.** DDial's own install
+      manual: "The sysop's handle appears in the /S list as caller #0",
+      with dial-in callers 1 to 7 and the console outside the seven; its
+      FFlash mods list calls it "line 0" twice. GTalk read from source
+      rather than from docs: `cport->console = (!port_num);` and, in the
+      older header, `#define is_console_node(node) (!(node))`, with serial
+      buffers allocated for ports 1..N only and node 0 left out of the
+      free-line count. **Evidence is strong** (GTalk from source, DDial
+      from two original manuals plus an independent search hit on the same
+      sentence), with one honest gap: no Diversi-DIAL source survives
+      anywhere reachable, so that half is manuals rather than code, and
+      its quotes came through a summariser, so treat them as near-verbatim.
+    - **The precedent for a non-human line is a number plus a MARKER
+      CHARACTER, not a reserved letter**, and that settles the AI's shape.
+      Neither system ever had a bot; the only non-human line was a link, it
+      took an ordinary numbered slot (`/LINKn : Set node #n as a link`),
+      and GTalk marked it by printing `=` instead of `:` before the handle
+      in both `/S` and the DDial `/SP`. **This board already has exactly
+      that mechanism**: `)` caller, `*` guest, `>` co-sysop, `]` sysop, so
+      the AI is node 12 with its own bracket character in `rankBracket` and
+      no new concept at all. The letter design that was briefly considered
+      ("AI is the line, like S") has no historical support and is dropped.
+    - **A link's addressing across stations was flat concatenation with no
+      station field**: DDial put the link line's digit in front of the
+      remote line's, so a link on line 3 makes the far callers #30 to #37
+      and `/P32` reaches one. So **0 was addressable across a link too**
+      (#30 being the remote sysop), which is the strongest argument for
+      taking the number seriously rather than keeping a letter. GTalk's
+      later IP version replaced the concatenation with `system/node`, which
+      is the shape our own board linking should copy instead, since flat
+      concatenation stops working at ten lines.
+  - **So `/p0` ships in 1.2.2 and the DISPLAY change does not** (my
+    recommendation, Rob's call). Accepting the number is additive and
+    costs one `if`; making `nodeName` print `0` instead of `S` moves every
+    list, the panel, the caller log and every test that reads a node
+    column, for a cosmetic gain. It belongs in 1.3 beside the themes and
+    the panel alignment, where those lists are being touched anyway.
+    **Until then the board accepts a number it does not print**, which is
+    a deliberate alias (the shape of the hidden `BULLETIN` alias) and not
+    a fix for finding the sysop's line; `bbs_util.h`'s own comment about a
+    list showing `c` for the node you must call 12 is the rule that says
+    so, and 1.3 is where it gets honoured.
   - **To design before building:** who pays for the wait (a model answers
     in seconds, and Rule no. 1 says not on the loop, so the request belongs
     on the runner with the room told the bot is typing); what the bot is
