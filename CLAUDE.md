@@ -4151,10 +4151,26 @@ they are the process, and getting them wrong wastes Rob's time.
     router that forwards agent output unexamined is worse than the cost it
     saves, and this file is full of cases where an agent's conclusion was
     wrong and reading settled it.
+  - **ONE SESSION PER TASK, NOT PER DAY** (Rob adopted it, 2026-10-06; of
+    five proposals this was the one to start with, because it costs nothing
+    and it is the only one that attacks the 94%). A session that carries a
+    bench debug, a piece of research, a release rescope and a tooling job
+    is paying for all four on every call once the fourth starts. **The
+    handoff is this file, not the conversation**: CLAUDE.md is read fresh
+    at the start of every session, which is exactly what conversational
+    memory is being charged for. So at a task boundary: write the
+    conclusion down, start clean. Carrying context is the expensive way to
+    remember something that a paragraph here remembers for free.
+  - **Cloud is a deliberate choice, NOT a default** (Rob, 2026-10-06:
+    "that cloud credit I only have $100 left there so yes we can use it but
+    cant make that the default in all cases"). It is a second, smaller and
+    finite budget. Spend it on board-free work that is big enough to be
+    worth it - a full regression, an audit, a long research pass - and not
+    on everything that merely could run there. Cloud still cannot build
+    firmware images or reach a board.
   - **The ranked levers**, biggest first:
-    1. **Session length.** A session 13,000 records deep taxes every call.
-       New work belongs in a new session, which is worth far more than any
-       amount of careful phrasing inside an old one.
+    1. **Session length**, above. A session 13,000 records deep taxes every
+       call.
     2. **Batch independent tool calls into one message.** Four greps in one
        message pay the context once; four messages pay it four times. This
        was done badly during the 2026-10-06 bench and it is the easiest of
