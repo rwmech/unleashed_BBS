@@ -9,6 +9,32 @@ Nothing here needs a board.
 
 ---
 
+## Two phases, and phase 1 is all you do now
+
+**Do not restructure `tools/testclient.py` yet.** The 1.2.2 lanes are
+appending tests to that same file (`/p0` and `/p11`, the 32-hex token
+refusal, `ssh_port` in announce, the plugin on/off list). Splitting a
+23,096-line file by subsystem while other work appends to it guarantees a
+merge conflict in a file that no longer exists in the same shape, which is
+worse than either job on its own.
+
+**Phase 1, now, and it is the valuable half: measure and classify. Change
+no test.** Everything in "The job, in order" steps 1 and 2, plus rule B's
+measurements, plus the coverage-versus-catch verdict for every check you
+would want to delete. Read-only against the tests; you may run them freely.
+The deliverable is the audit document and nothing else. It cannot conflict
+with anything, so it runs in parallel with the release.
+
+**Phase 2, after 1.2.2 is tagged:** the split, the moves into unit tests and
+the deletions, from the audit's own evidence. A second cloud session, with
+the audit in hand.
+
+**Branch:** work from `main`. The 1.2.2 work is on lanes that have not
+merged, so `main` is the stable base; note in the audit that lanes exist and
+that their new tests are not in your count.
+
+---
+
 ## The shape Rob wants (2026-10-06, his words)
 
 > Tests SHOULD be as follows: Unit, Integration, Regression.
@@ -158,13 +184,31 @@ without grepping 23,000 lines.
 
 ## Deliverables
 
-1. `internal/test-suite-audit-2026-10-06.md`: the measurements, the
-   classification of all 216, what moved to unit, what was deleted and the
-   evidence per deletion, what you kept and why, and what wants a `src/`
-   split that you did not make.
-2. The changes on a branch, **not merged**.
-3. Before and after: pass count, runtime, and proof the selected-test set is
-   unchanged where it should be.
+**Phase 1 (this session): one document, no test changes.**
+
+`internal/test-suite-audit-2026-10-06.md`, containing:
+
+1. The measurements from rule B, as figures rather than impressions.
+2. The classification of all 216: logic or wiring, and for the logic ones
+   whether the function behind it is already pure or would need a `src/`
+   split (named, not made).
+3. **The coverage-versus-catch verdict per deletion candidate**, each with
+   the commit it was run against and whether it failed there. This is the
+   part phase 2 cannot be done safely without, and it is the part that takes
+   the time.
+4. The per-profile analysis: which of the 13 SSH tests genuinely need a
+   profile and which do not, with the reason.
+5. What you would cut, what you would move, what you would keep, each with
+   its evidence — as a proposal, not applied.
+6. Anything found that is out of scope, including `src/` splits worth
+   making and any test you believe is currently asserting a bug as correct.
+
+Commit the document by file name on a branch. Do not push. Do not change
+`tools/testclient.py` or any `host/test_*.cpp` in this session.
+
+**Phase 2 (a later session, after 1.2.2 tags):** apply it, with before and
+after pass counts and runtime, and proof the selected-test set is unchanged
+where it should be.
 
 ## House rules
 
