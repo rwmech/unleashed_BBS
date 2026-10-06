@@ -200,16 +200,18 @@ each image rather than off PlatformIO's RAM percentage, which is against
 | freenove_wrover_cam | 177,040 | 3,696 | 1,368,688 |
 | freenove_wrover_cam_release | 177,040 | 3,696 | 1,368,704 |
 | ws_s3_lcd147 | 263,296 → 263,600 (**+304**) | 78,464 → 78,160 | 1,512,832 → 1,520,480 (+7,648) |
+| ws_s3eth | 266,640 → 266,968 (**+328**) | 75,120 → 74,792 | 1,531,536 → 1,539,184 (+7,648) |
 
-Six of the twenty-three environments, all with no warnings, and the host
-build. The other seventeen were still compiling when this was written and
-are **not** measured here: `esp32dev_release`, `esp32dev_backuptest`,
-`esp32dev_diag`, `esp32dev_wdttest`, `ws_s3eth`, `ws_s3eth_release`,
-`ws_s3_lcd147_release`, `ws_s3touch43b`, `ws_s3touch43b_release`,
-`ws_s3touch2`, `ws_s3touch2_release`, `makerfabs_s3_par35`,
-`makerfabs_s3_par35_release`, `makerfabs_s3_par35v2`,
-`makerfabs_s3_par35v2_release`, `guition_4848s040` and
-`guition_4848s040_release`. `portmap.cpp` is identical in every image and
+Seven of the twenty-three environments, all with no warnings, and the host
+build. These seven are the four 1.2.2-portmap.2 recorded, so there is a
+delta to give, plus the release twins of the two camera boards. The other
+sixteen were still compiling when this was written and are **not** measured
+here: `esp32dev_release`, `esp32dev_backuptest`, `esp32dev_diag`,
+`esp32dev_wdttest`, `ws_s3eth_release`, `ws_s3_lcd147_release`,
+`ws_s3touch43b`, `ws_s3touch43b_release`, `ws_s3touch2`,
+`ws_s3touch2_release`, `makerfabs_s3_par35`, `makerfabs_s3_par35_release`,
+`makerfabs_s3_par35v2`, `makerfabs_s3_par35v2_release`,
+`guition_4848s040` and `guition_4848s040_release`. `portmap.cpp` is identical in every image and
 has no board gating but `BBS_HAS_SSH`, so the delta is expected to match
 the profiles above; expected is not measured, which is why they are named
 rather than assumed.
