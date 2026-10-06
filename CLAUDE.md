@@ -2972,6 +2972,68 @@ this tree.
     many connections)" in its error box; pre-banner lines are debug-only in
     OpenSSH and silently discarded by PuTTY, and a userauth banner costs a
     key exchange. Not seen on a real client (the guard refuses ssh here).
+  - **SyncTERM 1.9 cannot do SSH to this board AT ALL, on either port, and
+    the reason is the cipher list** (settled 2026-10-06 on HQ, from
+    cryptlib's and SyncTERM's own source rather than from the error
+    message). The entry below is about the SHARED port and still stands;
+    this is the bigger finding underneath it.
+    - **Measured off the wire**, HQ's KEXINIT on `ssh_port` 6422: kex
+      `curve25519-sha256, curve25519-sha256@libssh.org, ecdh-sha2-nistp256`;
+      host keys `ssh-ed25519, ecdsa-sha2-nistp256`; ciphers
+      `aes256-gcm@openssh.com, aes128-gcm@openssh.com, aes256-ctr,
+      aes128-ctr`; MACs `hmac-sha2-256, hmac-sha2-512`. The 1.2.1 aes192
+      fix is confirmed live: no aes192 in that list.
+    - **cryptlib, which SyncTERM 1.9 and earlier use, offers only
+      `aes128-cbc` and `aes256-cbc`** (`session/ssh2_algo.c`,
+      `algoStringEncrTbl`). CTR sits behind `USE_SSH_CTR`, off in the
+      default build, and cryptlib's own source calls it "the
+      disabled-by-default extremely brittle CTR mode". **No GCM anywhere in
+      its SSH.** So kex, host key and MAC all overlap and **the cipher is
+      the one category with none**.
+    - **The error code does NOT say that, and reading it as if it did was
+      wrong.** SyncTERM showed `-11`, which is `CRYPT_ERROR_NOTINITED`,
+      raised in `checkClientParameters()` **before any network I/O** when a
+      required attribute was never set - in Rob's case most likely the
+      empty BBS Password field. The no-common-algorithm error is `-20`,
+      `CRYPT_ERROR_NOTAVAIL`. So fixing the `-11` only gets a caller as far
+      as the `-20`. **A client's error number is evidence about the client,
+      not about the negotiation**; the server's own KEXINIT is what settles
+      a compatibility question, and reading it took one short script.
+    - **SyncTERM 1.10a (master, nightlies at syncterm.bbsdev.net) replaced
+      cryptlib with DeuceSSH and matches on all four**: curve25519-sha256,
+      ssh-ed25519, aes256-ctr, hmac-sha2-256. **No firmware change.** The
+      latest *release* is still 1.9 (2026-09-07), which is why there is no
+      1.10 download to find.
+    - **Adding CBC to our side is refused**: wolfSSH soft-disables AES-CBC
+      by default and says so in its own comment, and CBC in SSH carries a
+      known plaintext-recovery weakness. A deprecated cipher for one old
+      client is the wrong trade.
+    - **Owed to the site** (web agent): the client page should say SSH needs
+      SyncTERM 1.10a or a standard SSH client, and that 1.9 and earlier are
+      telnet-only here. Rob will not be the last to hit it.
+    - **Proven on HQ the same day**: OpenSSH connects to 6422 and logs in,
+      so the board's SSH is healthy over a real network on a real S3. That
+      is NOT the queued bench item, which is ten CONCURRENT logins against
+      the watchdog.
+  - **Two from HQ's own screens, 2026-10-06, both queued for 1.3:**
+    - **The login line drops the µ**: HQ on an ANSI-CP437 SSH session prints
+      "running nleashed BBS v1.2.1". CP437 has µ at 0xE6, so something in
+      that path loses it rather than translating it. Same family as the
+      `??nleashed` bug the bbs-qa agent was written for. It is on the login
+      screen of every SSH caller.
+    - **The board never paints a background**, only foregrounds, so it
+      inherits the terminal's. SyncTERM defaults to black and nobody
+      noticed; over SSH from PowerShell the blue makes it obvious (Rob:
+      "running powershell looks like shit on blue"). It belongs with the
+      1.3 themes work, whose spec already says C64 blue and Hot Dog Stand
+      are the two themes that paint the ANSI background - which means the
+      default theme should be painting black and currently paints nothing.
+  - **A 357 ms loop stall in the backup phase, seen on HQ** (WS43B 1.0.6 on
+    1.2.1, 1d 09:34 uptime): `Loop worst 357,553 us in backup`, with 8 slow
+    passes over 50 ms across 9,031,752 passes and an average of 580 us. Rare
+    rather than chronic, and seven times the threshold: Rule no. 1 says a
+    feature may not stall the callers who are not using it. Not chased yet;
+    the figure is here so whoever picks it up starts with it.
   - **SyncTERM up to 1.9 cannot connect on a shared port; Rob's answer
     (2026-09-26): keep SSH on 6400 for clients that speak first AND a port
     of its own, `ssh_port` (default 6422, 0 off, CONFIG network's last row,
