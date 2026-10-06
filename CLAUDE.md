@@ -4207,6 +4207,50 @@ approach everything seems to be haphazard as to how it gets fixed/done."
   - A minor or major release (x.Y.0) still waits for the full run before
     its tag.
 - **Every milestone gets a fresh optimization report** (Rob). When a block or a version reaches its regression run, send the `optimize` agent off as part of that run and put its report in `internal/`. Dated, one per milestone, kept. The point is the trend as much as the findings: a figure that has quietly grown by 2 KB a milestone is invisible in any single report and obvious across four, and the cheapest time to notice something is eating the budget is before it matters. The report is also what makes a size decision reviewable rather than remembered.
+- **Read the FOSS that already does it before writing our own** (Rob,
+  2026-10-06: "we should alsways consider reviewing FOSS software before
+  trying to write a module ourselves"). Not to copy the code, which is often
+  the wrong licence or the wrong shape for this board, but because a project
+  shipped to a hundred thousand boxes has **field evidence we cannot
+  generate**: years of bug reports from hardware, phones and routers nobody
+  here owns.
+  - **It settled an argument the same day it was written down.** The gateway
+    sat's access point address went to 4.3.2.1 because WLED uses it, over my
+    objection that it is public space and tooling would treat it as the
+    internet (which it promptly did: a bench tool refused to reach it). Rob:
+    "its proven to work with wled and im guessing hes had a lot more people
+    report bugs that youve seen on the topic". He is right, and the general
+    form is that **a shipped thing's bug tracker outranks an argument from
+    first principles**, every time, on anything that touches real devices.
+  - **The same session had three other instances**, all of which were already
+    written down in `internal/study-ap-gateway-sat-2026-10-05.md` and all of
+    which came from other people's projects: four or more years of
+    `arduino-esp32` reports saying an ESP32 portal does not pop on recent
+    Samsung devices and naming the two folk fixes; the IDF's own
+    `examples/protocols/http_server/captive_portal/` with its `dns_server`
+    component; and Google's statement that Android marks a Private-DNS
+    network "No internet access", which is exactly the dialog the bench
+    produced.
+  - **This is the design-side twin of a rule the project already had for
+    testing**: lrzsz found an XMODEM bug because it is somebody else's
+    implementation, and `tools/testclient.py` hid two real bugs because it
+    was written beside the board and agreed with it. A module written
+    without reading the prior art agrees with its author in the same way.
+  - Where to look first for this hardware: WLED, ESPHome, the IDF's own
+    examples, arduino-esp32's issues, and for anything protocol-shaped, the
+    reference implementation rather than a description of it.
+- **Review the code and the existing spec BEFORE a bench session, not
+  during it** (the same day, Rob: "why on earth you didnt just review that
+  code before starting is beyond me"). The gateway sat's phase 2 bench ran
+  with Rob and his phone waiting while the code was read reactively, one
+  grep at a time. Everything needed was already on disk: the probe shape was
+  a setting whose comment said "phase 2 tries both on a real phone", the
+  study named Private DNS as fatal with no server-side fix, and the address
+  move was one of the two known fixes. **Rob is the blocked resource in a
+  bench session**, so the reading happens first and the session starts with
+  the variables named and a plan for which one moves. Code review already
+  never needs approval; this is the same rule applied before hardware rather
+  than before a commit.
 - **Verify before asserting.** Claims get checked against the source or a
   primary reference first. Stale warnings and confident wrong answers cost
   more than saying "I do not know yet".
