@@ -63,6 +63,13 @@ data/system.cfg
 data/calls.log
 CLAUDE.local.md
 
+# The staging area between a finding and a decision (2026-10-06). Kept out
+# of git deliberately: a settled thing belongs in CLAUDE.md, which is read
+# fresh every session and is therefore the cheap way to remember it. Backed
+# up outside the repo by tools/notes_backup.py, because gitignored also
+# means unprotected by everything git does for a tracked file.
+notes/
+
 # Anything *.local.md is private working material and never ships.
 # The repo is intended to go public, so an idea that is not ready to be
 # public does not live in a tracked file, not even a private repo's:

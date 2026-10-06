@@ -4175,6 +4175,20 @@ they are the process, and getting them wrong wastes Rob's time.
        message pay the context once; four messages pay it four times. This
        was done badly during the 2026-10-06 bench and it is the easiest of
        these to get right.
+    2b. **Read it once, write down what it meant, never go back for the
+       same question.** `notes/` is the staging area and is gitignored
+       (Rob, 2026-10-06: "cant you cook up some temp space in the repo ...
+       im fine with a .gitignore buffer, just make a second copy or daily
+       backup"). It holds a finding that is true but not yet a decision -
+       measurements, field names read out of a format, which function
+       actually owns a thing. **A settled thing goes in CLAUDE.md
+       instead**, because this file is read fresh every session and is
+       therefore the cheap way to remember it; notes are staging, not a
+       second memory. At the end of a task every note is promoted or
+       deleted. `tools/notes_backup.py` copies it outside the repo, since
+       gitignored also means unprotected by everything git does for a
+       tracked file. Never a password or a key in there: not committed is
+       not the same as safe.
     3. **Delegate bulk reading**, per above.
     4. **Do not poll a background agent.** It reports when it is done.
   - Measure rather than guess: `python release-prep/usage.py --days 3`,
