@@ -2029,6 +2029,23 @@ this tree.
   - **On the sysop menu** (Rob, 2026-10-06: "make sure its in the sysop
     menu"), beside `PORTMAP`, rather than being a verb somebody has to know
     exists. Same `Menu::Sysop` placement and `CF_SYSOP` flag.
+  - **And a button on the CONFIG page itself** (Rob, same day: "maybe from
+    the config board have a button 'run portmap test' since people will want
+    to see that right away"), which is the better of the two because it sits
+    where the decision is being made rather than where somebody already
+    knows to look. The command stays as well: the button for discovery, the
+    verb for a sysop already at a prompt.
+    - The machinery exists: `FF_ACTION` is a button field and
+      `Form::Res::Open` says which was pressed, which is how CONFIG files
+      opens an area's sub-page. Plain ASCII has no cursor to put a button
+      under and already falls back to asking (`Area 1 [name] open (y/N)?`),
+      so that case is covered by the existing pattern.
+    - **It is on CONFIG network, not CONFIG board**, because that is where
+      `port_map` lives.
+    - **The probe takes seconds** (SSDP discovery, an HTTP fetch, a SOAP
+      call), so the button cannot block the form: it wants the walk-and-
+      spinner treatment the forums' write-wait uses, with the result landing
+      on the read-only row.
   - It reports which protocol answered and the outside address, and
     therefore gives the **carrier verdict for free** — which is the one
     thing nothing else on the reachability ladder can tell a sysop, and it
