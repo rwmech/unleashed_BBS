@@ -2174,7 +2174,22 @@ this tree.
     therefore gives the **carrier verdict for free** — which is the one
     thing nothing else on the reachability ladder can tell a sysop, and it
     can now be had without opening a port at all.
-  - **It is a TAG BLOCKER for 1.2.2, and the reason is that the copy got
+  - **MOVED TO 1.2.3** (Rob, 2026-10-06, after seeing the estimate: "portmap
+    test move to the nexct version"). It was the long pole in 1.2.2 at 1 to
+    1.5 days, nearly all of it the CONFIG button rather than the probe, and
+    dropping it takes the release to about 1.5 to 2 days. **Port mapping
+    itself still ships in 1.2.2**; only the read-only test and its button
+    move.
+    - **So the docs must be re-gated before the 1.2.2 tag**, which is the
+      cost the other option avoided and is now owed: nine reader-facing
+      passages and `/roadmap` describe `PORTMAP TEST` and the "Run port map
+      test" button at 1.2.2. **It is not a find-and-replace on `1.2.2`**,
+      because the same pages gate the port-mapping feature at 1.2.2 and that
+      part is correct; only the test's own sentences move to 1.2.3.
+    - The entry below is kept as written, because the design is settled and
+      only its version moved.
+  - **It WAS a tag blocker for 1.2.2, and the reason is worth keeping
+    because it will recur: the copy got
     written first** (Rob's call, 2026-10-06: build it, keep the copy). The
     port-map documentation already describes `PORTMAP TEST` and the "Run
     port map test" button, gated at 1.2.2, while `portmap.h` on
