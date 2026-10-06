@@ -1980,7 +1980,62 @@ this tree.
       about 300 s to fetch a consensus), and shipping anonymity on that is
       not a thing to do on somebody's say-so.
   - **Rob's decisions on the study, 2026-10-05:**
-    - **Port mapping goes ahead of the broker, and it is BUILT**
+    - **Both protocols proven on a real router (Agentville, 2026-10-06), and
+  the bench answered three things no host test could.**
+  - **NAT-PMP, then UPnP, both granted a mapping on Rob's MikroTik.** The
+    first reading said "answers neither", which was **a configuration gap,
+    not an absence**: RouterOS had NAT-PMP enabled with no interfaces
+    declared, so it listened on nothing. With WAN as external and bridge1
+    as internal it granted on the first ask. **Never conclude a vendor
+    lacks a protocol from one unconfigured box.** RouterOS has NAT-PMP
+    (since 7.13) and UPnP, and not PCP.
+  - **A router can advertise a protocol in its menu and answer on no
+    interface, which the board cannot tell from absence.** That is now the
+    third limb of `Why::NoAnswer` ("off, not set up, or does not have it",
+    47 of the 52 columns) with `whatToDo` naming the trap, because the old
+    wording was accurate and pointed at the wrong remedy.
+  - **The carrier verdict is confirmed against real data, three ways.**
+    NAT-PMP, UPnP and the directory's `X-Seen-Address` independently
+    returned the same public address, and the board printed "on the
+    internet" rather than the carrier red. Two unrelated paths agreeing is
+    the premise the whole test rests on; had Rob been behind CGNAT this is
+    exactly where they would have diverged. **And its limit is
+    structural:** a silent router yields no address, so `Why::NoAnswer`
+    arrives before `Why::Carrier` can be reached.
+  - **The hardest part of the UPnP path was right first time:** the
+    MikroTik serves UPnP on **port 2828**, not 1900 or 5000, so the board
+    had to parse the SSDP `LOCATION`, fetch the description and extract a
+    non-default control port, then pick `WANIPConnection` over PPP. All
+    correct on the first run.
+  - **That router refuses a leased mapping (IGD 725) and only grants
+    permanent ones**, so `Status::permanent` / `F_PERM` is the path it
+    takes every time rather than a rare branch. **The documented hole is
+    therefore live on ordinary kit: a permanent mapping is not given back
+    when a board is simply unplugged**, because SHUTDOWN leaves it running
+    and nothing runs when the power goes. The wording "off gives it back"
+    earns its place.
+  - **Rule no. 1: clean, measured both ways.** 16 asks against a silent
+    router and 8 against one that answers each produced **zero** slow
+    passes, and UPnP's 7.5 s of discovery, description fetch and two SOAP
+    calls produced none either. The CONFIG save is what costs: **~240 ms,
+    now pinned three times** (239,070 / 244,713 / 245,455 us), named by the
+    console as `node 0 CONFIG` with 24 opens and ~90 ms inside them. It
+    belongs to the known LittleFS `system.cfg` class with CAMERA SET's
+    118 ms and the Freenove's 414 ms, not to this feature.
+  - **The method that made those readings conclusive, and it is the
+    generalisable part: take both readings inside ONE session.** This board
+    pays a fixed per-login cost for its free-space measurement (it names it
+    `Longest job 1,065 ms, space`). A comparison spanning sessions silently
+    includes it: the first one saw the slow-pass count creep 1 to 3 and
+    read as evidence against port mapping, when it was logins. **Where a
+    fixed cost is paid once per session, a measurement spanning sessions
+    cannot separate it from the thing under test, however many samples it
+    has.** More readings do not fix it; moving both inside one session
+    does. It turned a wrong answer into a right one twice in a day.
+  - Owed: `cfg_walk_to` needs `b"router to forward"` for that row, because
+    at 80 columns the status line shows the long help and the 40-column
+    note text does not match.
+- **Port mapping goes ahead of the broker, and it is BUILT**
       (1.2.2-portmap.2, the entry below): no component in the middle at all,
       and **the only item on the list that helps the base ESP32**, which is
       why it outranks a broker on both of his words. It does nothing under
