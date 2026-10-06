@@ -3015,6 +3015,61 @@ this tree.
       so the board's SSH is healthy over a real network on a real S3. That
       is NOT the queued bench item, which is ten CONCURRENT logins against
       the watchdog.
+  - **The lag hunt of 2026-10-06: TABLED, board exonerated, three real bugs
+    found on the way.** Rob reported SSH and then telnet feeling laggy on HQ
+    (WS43B, 1.2.1 then 1.2.2-dev.3). It did not reproduce and he stopped it:
+    "we didnt find anything and now I cant repeat it".
+    - **Four callers chatting at once, measured, each on its own
+      connection**: medians 11.5, 14.2, 14.3 and 17.4 ms from send to first
+      byte back; p95 under 30 ms bar one 60 ms first line; **zero sends
+      unanswered in ten seconds, by any of them**. Loop average 700 us with
+      those four on. One called it "indistinguishable from a local
+      terminal". So the board is not slow under real load, and keystroke
+      latency is not where to look.
+    - **What was chased and was wrong**, kept so nobody re-runs it: a
+      competing access point on channel 1 (the gateway sat; unplugging it
+      changed nothing), RF calibration (I had corrupted `phy_init` with a
+      bad flash, but erased is the state every release leaves it in - see
+      below), and Wi-Fi signal (-47 dBm, and it stayed solid at -68).
+    - **The panel A/B looked conclusive and then stopped reproducing.** Off
+      = fine, on = "blammo", then intermittent. The mechanism proposed, and
+      still worth testing properly one day, is that the 4.3B's RGB panel has
+      no framebuffer: an `on_bounce_empty` interrupt refills four-line
+      bounce buffers, and **that interrupt runs on core 1, which is where
+      the BBS loop is pinned**. An ISR preempts the loop without ever
+      appearing as loop work, so the load line and "CPU idle" are blind to
+      it by construction. The G4848 already drives its RGB panel from a full
+      PSRAM framebuffer with no refill interrupt, so the fix exists in this
+      tree if it is ever confirmed.
+    - **The lesson about the evidence, which is the real one**: this ran on
+      a board being flashed, erased and rebooted all afternoon, with a new
+      access point in the room. An intermittent fault and a disturbed board
+      make poor evidence together, and most of the disturbance was mine.
+  - **Three bugs the four-caller chat test found**, 2026-10-06, all queued:
+    - **Every chat line is silently cut at 64 characters.** All four callers
+      hit it; one measured **38% of all room traffic losing its tail**,
+      mid-word, with no bell and nothing on screen. Verified in the source
+      rather than from the reports: `chat.cpp:118` `kLineMax = 64` ("what a
+      caller may type on one line") against `config.h:139` `BBS_LINE_MAX 72`
+      (the editor's capacity). **The editor takes 72 and the room keeps
+      64.** The honest fix is to arm the editor at `kLineMax` in chat so a
+      caller cannot type past what the room will keep, rather than growing
+      the ring for a limit nobody asked for. Same shape as the rule the
+      composer work already recorded: an API that clamps rather than refuses
+      is one whose limit you discover from a user - and this one does not
+      even clamp visibly.
+    - **A join notice carried another caller's node number**: `*** #1:Bramble*
+      joined` then `logged off`, while node 1 was held by a different guest,
+      corrected two seconds later to node 4. Node attribution on the join
+      path, and the same family as every "state that outlives its owner" bug
+      here.
+    - **A guest was dropped with "Disconnected by sysop" unprompted**, 3.7
+      minutes into a 15-minute pass, with no sysop action. The only thing in
+      the whole run that looked like a fault.
+    - Worth knowing, not a bug: **a sent line costs about 180 bytes of
+      return traffic**, roughly 60 BS-space-BS triples rubbing out the input
+      line before it is reprinted. That is the input-lift design working,
+      and it is why one message reads as a large spike on a traffic meter.
   - **Two from HQ's own screens, 2026-10-06, both queued for 1.3:**
     - **The login line drops the µ**: HQ on an ANSI-CP437 SSH session prints
       "running nleashed BBS v1.2.1". CP437 has µ at 0xE6, so something in
