@@ -4124,6 +4124,50 @@ they are the process, and getting them wrong wastes Rob's time.
 - **Batch board work, do not drift into it.** Rob asks for board features while other work is in flight. They go in the queue below, and they get built together as one version with one regression run and one flash. Wandering off to implement or investigate a queued item mid-task is how a session ends with six half-finished things and nothing flashed.
 - **A web change is not verified until the rendered page has been checked.** grep on the HTML proves a string is present, not that a stylesheet applied, an element is positioned, or a menu is readable. Fetch the page and check the CSS rules actually reached it; if a change is visual, say plainly that it has not been looked at rather than implying it has.
 - **A patch script that gets replaced takes its edits with it.** Rewriting a scratchpad script and rerunning it silently drops anything the earlier version did. Either re-check the file afterwards or make each change once and confirm it landed. The nav stylesheet went missing exactly this way and shipped unstyled.
+- **Delegate by default, and READ through agents rather than into the
+  session** (Rob, 2026-10-06: "Im 100% fine with you delegating ... if an
+  agent sends it back to you and you ask an agent to save me money, go for
+  it ... just don't want to lose your ability to read things"). Standing,
+  and the reasoning is measured rather than assumed, off
+  `release-prep/usage.py` against this machine's own logs.
+  - **What costs money here is not output, it is context re-read.** Of one
+    day's 1.8 billion tokens, **1.7 billion were cache reads and 1.1 million
+    were output** - 94% against 0.06%. Nobody is paying for what gets
+    written. They are paying for the conversation being re-read on every
+    call.
+  - **So a big read is not a one-off cost, it is a tax on every later
+    call.** Pulling a 2,000-line file into the coordinator's context means
+    paying for it again on every single call for the rest of the session.
+    The same file read by a subagent that reports twenty lines is paid for
+    once, in a context that starts nearly empty.
+  - **Which inverts the obvious conclusion**: delegating is not the
+    expensive option, it is the cheap one. A fresh agent's calls are
+    cheap *because* its context is small. The coordinator's are dear for
+    exactly the opposite reason.
+  - **The limit Rob set, and it is the right one: do not stop reading.**
+    Read what the judgement needs - a diff, a function, the thing a claim
+    rests on. What to push out to an agent is BULK: whole files, sweeps,
+    greps across a tree, transcripts, any "go and find out". Becoming a
+    router that forwards agent output unexamined is worse than the cost it
+    saves, and this file is full of cases where an agent's conclusion was
+    wrong and reading settled it.
+  - **The ranked levers**, biggest first:
+    1. **Session length.** A session 13,000 records deep taxes every call.
+       New work belongs in a new session, which is worth far more than any
+       amount of careful phrasing inside an old one.
+    2. **Batch independent tool calls into one message.** Four greps in one
+       message pay the context once; four messages pay it four times. This
+       was done badly during the 2026-10-06 bench and it is the easiest of
+       these to get right.
+    3. **Delegate bulk reading**, per above.
+    4. **Do not poll a background agent.** It reports when it is done.
+  - Measure rather than guess: `python release-prep/usage.py --days 3`,
+    `--by project`, `--by session`. **There is no API for this** - the Admin
+    usage endpoints are organisation-only ("The Admin API is unavailable for
+    individual accounts") and `/cost` covers one session and stores nothing.
+    The script reads the per-call token counts Claude Code already writes to
+    `~/.claude/projects/*.jsonl`. **It shows burn, never balance**: no
+    remaining-credit figure exists anywhere outside the Claude app.
 - **Use the agents.** `.claude/agents/` holds ten. They exist because each one encodes a bug that already shipped here, and running one is cheaper than finding those bugs the way they were found the first time.
 
 | Agent | When |
