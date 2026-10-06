@@ -6284,8 +6284,12 @@ BOARD_LED  = 6
 #   sd_rows    CONFIG sd has pin rows (an SPI slot on settings)
 #   wired43    (optional) 43 is wired to a part on the board, so CONFIG
 #              refuses it as "wired on the board" (BBS_PINS_WIRED)
-#   sd_tried   (optional) the card's CS and MOSI as SD's "no card" line names
-#              them; the reference board's where a row has none
+#   sd_tried   two things SD's "no card" line names for this board's slot:
+#              its CS and MOSI where it has them, else what the plugin says
+#              instead ("SDMMC" and a CLK, or "expander" and a MOSI). Every
+#              profile has one now: falling back to the reference board's
+#              CS 5 and MOSI 23, which no other board uses, meant the check
+#              could only ever fail (7 of 9 profiles did, measured 2026-10-06)
 #   sd_move    (optional) a CS pin a hand edit may move the card to that is
 #              free under the harness and not the shipped CS (test_sd_no_reprobe)
 # None is a fact this table does not know for the profile: the check that
@@ -6298,16 +6302,29 @@ PIN_BOARD = {
     "":       dict(_WROOM_PINS, led=b"2", led_free=b"2", btn_free=b"4", serial=(b"16", b"17"),
                    sd_clock=(b"18", b"Clock GPIO"), sd_rows=True,
                    sd_tried=(b"CS 5", b"MOSI 23"), sd_move="4"),
+    # sd_tried is the two things SD's own screen names when it found no card,
+    # so "no card found" never goes out with no pin numbers beside it. A
+    # profile WITHOUT an entry here silently fell back to the WROOM's CS 5
+    # and MOSI 23, which no other board uses, so "and which pins it tried"
+    # could only ever fail there: found on the s3 profile in the 1.2.2
+    # ssh-lines run and proven pre-existing against v1.2.1's tree. Each pair
+    # below is read off that board's own block in src/board.h, and an SDMMC
+    # slot or an expander's chip select names what the plugin prints for it
+    # rather than a CS number it does not have (sd.cpp, the three forms).
+    # The Freenove's slot is SDMMC 1-bit, so it has no CS or MOSI at all.
     "fncam":  dict(_WROOM_PINS, led=b"-1", led_free=b"13", btn_free=b"13", serial=(b"33", b"32"),
-                   sd_clock=None, sd_rows=False),
+                   sd_clock=None, sd_rows=False, sd_tried=(b"SDMMC", b"CLK 14")),
     "espcam": dict(_WROOM_PINS, led=b"33", led_free=b"33", btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_tried=(b"CS 13", b"MOSI 15")),
     "s3":     dict(_S3_FLASH, led=b"-1", led_free=b"4", btn_free=b"4", serial=(b"2", b"1"),
-                   sd_clock=(b"14", b"Clock GPIO"), sd_rows=True),
+                   sd_clock=(b"14", b"Clock GPIO"), sd_rows=True,
+                   sd_tried=(b"CS 21", b"MOSI 15")),
     "ws2":    dict(_S3_FLASH, led=b"-1", led_free=b"18", btn_free=b"18", serial=None,
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_tried=(b"CS 41", b"MOSI 38")),
+    # The 4.3B's chip select is on its CH422G expander, not a GPIO, so the
+    # plugin says "wired CS on the expander" and names the other three.
     "ws43b":  dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=(b"43", b"44"),
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_tried=(b"expander", b"MOSI 11")),
     # The ESP32-S3-ETH's slot (board.h): CS 4, MOSI 6. Its card already sits
     # on 4, and the harness's serial bridge holds 16 and 17, so a moved CS
     # goes to 43, free on this board since its console is the chip's USB.
@@ -6315,12 +6332,12 @@ PIN_BOARD = {
                    sd_clock=None, sd_rows=None, sd_tried=(b"CS 4", b"MOSI 6"), sd_move="43"),
     # The Makerfabs' console is UART0, on 43 and 44 (BBS_PINS_CONSOLE).
     "mf35":   dict(_S3_FLASH, console=b"43", led=b"-1", led_free=None, btn_free=None, serial=(b"17", b"18"),
-                   sd_clock=None, sd_rows=None),
+                   sd_clock=None, sd_rows=None, sd_tried=(b"CS 1", b"MOSI 2")),
     # Its v2.0 (1.2.1, the board-mf35v2 merge): the console is the chip's own
     # USB, so not UART0's; 43 and 44 are refused all the same, as wired to the
     # CP2104 (BBS_PINS_WIRED: wired43). No bridge pins as shipped.
     "mf35v2": dict(_S3_FLASH, led=b"-1", led_free=None, btn_free=None, serial=None,
-                   sd_clock=None, sd_rows=None, wired43=True),
+                   sd_clock=None, sd_rows=None, wired43=True, sd_tried=(b"CS 1", b"MOSI 2")),
     # The Guition 4848S040 (1.2.1, the board-g4848 merge): UART0 is its console
     # to the CH340 (BBS_PINS_CONSOLE 43, 44), the card an SPI slot on the sd
     # plugin's settings (CS 42, MOSI 47, CLK 48, MISO 41). No LED and no
@@ -18519,8 +18536,17 @@ def test_sd():
         # which pins it tried, because "no card found" with no pin numbers
         # sends somebody to re-seat a card that was never the problem.
         ok &= check("it says there is no card", b"no card" in shown)
-        cs, mosi = PB.get("sd_tried", PIN_BOARD[""]["sd_tried"])
-        ok &= check("and which pins it tried", cs in shown and mosi in shown)
+        # A profile with no sd_tried SKIPs, which is the rule the rest of
+        # PIN_BOARD already follows: falling back to the reference board's
+        # CS 5 and MOSI 23 made this a check that could only fail, and it
+        # did on 7 of the 9 profiles until each was given its own pair. A
+        # new board added without one should say so, not inherit the WROOM's.
+        tried = PB.get("sd_tried")
+        if tried is None:
+            ok &= pin_skip("which pins SD tried")
+        else:
+            cs, mosi = tried
+            ok &= check("and which pins it tried", cs in shown and mosi in shown)
         ok &= check("and that the board is fine without one", b"runs fine without" in shown)
 
         s.buf.clear()
@@ -20046,6 +20072,362 @@ def test_ssh_socket_budget():
     return ok
 
 
+# ---------------------------------------------------------------------------
+# SSH lines (1.2.2): the sysop's ceiling, and ten of them.
+#
+# Both tests run on a COPY of the board, never the harness board itself: the
+# ceiling is a top-of-file key, and a test that lowered it on the real board
+# would hand every SSH test after it a board with fewer lines than it was
+# written for. A copy also means the eleventh caller's refusal is the copy's
+# socket budget and not the harness board's.
+# ---------------------------------------------------------------------------
+def ssh_cfg_line(tmp, key):
+    """A top-of-file key in a COPY board's system.cfg, or None. cfg_line
+    reads the harness board's own file, which these tests never touch."""
+    for line in (tmp / "data" / "user" / "system.cfg").read_text().splitlines():
+        if line.strip().startswith("["):
+            break
+        if "=" in line and line.split("=", 1)[0].strip() == key:
+            return line
+    return None
+
+
+def ssh_row(s, cmd=b"hardware"):
+    """The SSH row HARDWARE and SYS share (bbs_hardware.cpp, one function for
+    both), rendered wide so its note ("in use, most N") is on the line and not
+    dropped for width."""
+    s.buf.clear()
+    s.send(cmd + b"\r")
+    read_list(s, 10)
+    rows = render_lines(s.buf, cols=250)
+    return next((r for r in rows if r.startswith("SSH ")), "")
+
+
+def ssh_in_use(row, n, cap):
+    """The SSH row reads n of cap. statRow pads the label column, so the
+    figures are a run of spaces away from "SSH" and a plain substring would
+    never match (test_ssh_login reads it the same way)."""
+    return re.search(r"^SSH\s+%d of %d\b" % (n, cap), row) is not None
+
+
+def ssh_nudge(calls):
+    """A byte to every caller, so none of them idles out while the rest of the
+    test runs. A backspace: any byte read re-stamps Session::lastInput, and on
+    an empty handle buffer this one leaves nothing behind to be typed.
+
+    Needed because the handle prompt hangs up after BBS_NAME_TIMEOUT_MS (60 s
+    of BOARD time), which on the host's fast clock is 15 real seconds, and ten
+    SSH handshakes one after another take longer than that. Keeping the
+    callers alive by hand is better than marking the test REALTIME: the
+    subject here is the SSH ceiling, not the idle clock, and a test that only
+    runs on one of the two clocks is a test that stops being run.
+    """
+    for c in calls:
+        try:
+            c.send(b"\x08")
+        except OSError:
+            pass
+
+
+def ssh_callers(port, n, name, secs=25):
+    """n SSH callers at the handle prompt, brought up ONE AT A TIME.
+
+    Not a nicety: sshd::claim counts links still in Start or Handshake from
+    the same peer against kPerPeer (2), and every caller here comes from
+    127.0.0.1, so two at once in the handshake is the limit and a third would
+    be told "Too many SSH logins at once from you". A caller that has reached
+    the handle prompt is Open and no longer counted, so waiting for the prompt
+    before dialling the next is what makes ten from one address possible.
+
+    Returns (the callers, how many got in). Everything opened is returned even
+    on a failure, so the caller can still close them.
+    """
+    out = []
+    for i in range(n):
+        c = SshCaller(user="%s%d" % (name, i + 1), port=port)
+        out.append(c)
+        if not (c.said(b"ssh_call: open", secs) and c.wait_for(b"Enter your handle", secs)):
+            return out, i
+        ssh_nudge(out)                 # none of the earlier ones may idle out
+    return out, n
+
+
+def test_ssh_lines():
+    """CONFIG network's "SSH lines" (1.2.2, Rob: ten lines, "or make it
+    configurable for memory purposes").
+
+    The row lowers this board's own BBS_SSH_MAX, so a sysop can keep the PSRAM
+    for something else. 0 and a blank both mean the board's figure and never
+    "SSH off", because ssh_port on the row above already uses 0 for that and
+    one page cannot have two meanings for it. The row is live, not next
+    restart: a save stops the NEXT SSH caller and leaves the ones already on,
+    since cutting a caller off to make a figure true would be a worse answer
+    than letting it come true as they leave.
+
+    Out of range from a FILE is clamped and logged rather than refused: a
+    backup from a ten-line board restored onto a profile built for fewer
+    would otherwise throw away the network, the passwords and every plugin
+    section over one number whose safe meaning is plainly "as many as this
+    board can take" (the 1.0.2 rule). Out of range typed into CONFIG is still
+    refused, so the sysop who typed it is told.
+
+    Every check fails against 9f60b4e, where the row does not exist and the
+    board's figure is 8.
+    """
+    print("SSH: the sysop's line ceiling")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    ok = True
+    port = PORT + 3923
+
+    # A board as the installer leaves one: no ssh_lines line at all.
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text("\n".join(ln for ln in cfg.read_text().splitlines()
+                             if not ln.lstrip().startswith("ssh_lines")) + "\n")
+    proc = start_copy(tmp, (str(port),))
+    try:
+        log = copy_log(tmp, "cfg: ssh lines", 10)
+        ok &= check("no ssh_lines line: the console says the board's own ten",
+                    "cfg: ssh lines 10 of the board's 10" in log)
+        s, up = copy_sysop("SshLineSysop", port)
+        ok &= check("a sysop on the copy", up)
+
+        ok &= check("CONFIG network opens", cfg_open(s, b"network", b"Password"))
+        page = plain(s.buf)
+        ok &= check("SSH lines is on the page, at 80 by its long label",
+                    b"SSH lines at once" in page)
+        # find, never index: index raises on a page that does not carry the
+        # row, and a check that raises takes every check after it in the test
+        # down with it, which is how a run against the old build proves less
+        # than it appears to (the 0.21.9 lesson, met again here).
+        at_lines, at_port, at_cgnat = (page.find(b"SSH lines at once"),
+                                       page.find(b"SSH port"), page.find(b"CGNAT"))
+        ok &= check("after the SSH port row, so no row above it moved",
+                    at_cgnat >= 0 and at_cgnat < at_port < at_lines)
+        rows = render_lines(s.buf)
+        box = next((r for r in rows if "SSH lines at once" in r), "")
+        ok &= check("and the box reads the figure in force, 10",
+                    re.search(r"\b10\b", box) is not None)
+        cfg_cancel(s)
+
+        # The same row at 40 columns carries the short label, which is what a
+        # C64 sees: nine characters, and the note shortened to fit.
+        naws(s, 40, 25)
+        drain(s)
+        ok &= check("CONFIG network opens at 40 columns", cfg_open(s, b"network", b"Password"))
+        narrow = plain(s.buf)
+        ok &= check("the row's short label is there, and never the long one",
+                    b"SSH lines" in narrow and b"SSH lines at once" not in narrow)
+        cfg_cancel(s)
+        naws(s, 80, 24)
+        drain(s)
+
+        # Out of range, typed: refused, and nothing written.
+        ok &= check("CONFIG network opens again", cfg_open(s, b"network", b"Password"))
+        ok &= check("the focus reaches the SSH lines row by its own note",
+                    cfg_walk_to(s, b"The most SSH callers at once"))
+        s.buf.clear()
+        s.send(b"\x08" * 3 + b"11" + F1)
+        ok &= check("11 on a board that holds 10 is refused",
+                    cfg_verdict(s, [b"Between 0 and 10", b"Saved and live"]) == b"Between 0 and 10")
+        cfg_cancel(s)
+        ok &= check("and nothing was written to system.cfg",
+                    ssh_cfg_line(tmp, "ssh_lines") is None)
+        ok &= check("so the board still holds ten", "most 10" in ssh_row(s))
+
+        # Three, and it is live: the words say so and the next caller sees it.
+        ok &= check("CONFIG network opens to lower it", cfg_open(s, b"network", b"Password"))
+        ok &= check("the focus reaches the row", cfg_walk_to(s, b"The most SSH callers at once"))
+        s.buf.clear()
+        s.send(b"\x08" * 3 + b"3" + F1)
+        ok &= check("3 saves, and LIVE rather than from the next restart",
+                    cfg_verdict(s, [b"Saved and live", b"next restart", b"saved, but"]) == b"Saved and live")
+        ok &= check("the line is written", (ssh_cfg_line(tmp, "ssh_lines") or "").endswith("= 3"))
+        ok &= check("HARDWARE reads the new ceiling", "most 3" in ssh_row(s))
+        ok &= check("and SYS, which draws the same row, agrees",
+                    "most 3" in ssh_row(s, b"sys"))
+
+        # Three on, and the fourth refused for SSH slots while nodes are free.
+        calls, got = ssh_callers(port, 3, "SshLineCaller")
+        try:
+            ok &= check("three SSH callers get in", got == 3)
+            ok &= check("HARDWARE counts them against the ceiling", ssh_in_use(ssh_row(s), 3, 3))
+            ssh_nudge(calls)
+            data, closed = ssh_raw_hello(port)
+            ident, packets, rest = parse_ssh_hello(data)
+            code, text = ssh_disconnect_reason(packets[0][1]) if packets else (None, None)
+            ok &= check("a fourth is refused with one DISCONNECT in the clear, reason 12",
+                        ident == b"SSH-2.0-unleashedBBS" and len(packets) == 1
+                        and code == 12 and not rest and closed)
+            ok &= check("and the reason is SSH's own ceiling, not the lines",
+                        text == "--> All SSH ports are full")
+            ok &= check("no key exchange was started", packets and all(p[0] != 20 for p in packets))
+            ssh_nudge(calls)
+            t = Caller(ansi=True, port=port)
+            ok &= check("a telnet caller is still admitted: the ceiling is SSH's alone",
+                        t.wait_for(b"Enter your handle", 12))
+            t.close()
+
+            # Lowered UNDER the callers already on. sshd::cap floors itself at
+            # what is in use, so the row reads "3 of 3" and not "3 of 1":
+            # there is nothing honest to do with a session above the new
+            # figure, and cutting a caller off to make a number true would be
+            # a worse answer than letting it come true as they leave. "3 of 1"
+            # would read as an arithmetic fault rather than as a limit.
+            ssh_nudge(calls)
+            ok &= check("CONFIG network opens with three callers on",
+                        cfg_open(s, b"network", b"Password"))
+            ok &= check("the focus reaches the row", cfg_walk_to(s, b"The most SSH callers at once"))
+            s.buf.clear()
+            s.send(b"\x08" * 3 + b"1" + F1)
+            ok &= check("lowering it to 1 under them saves",
+                        cfg_verdict(s, [b"Saved and live", b"saved, but"]) == b"Saved and live")
+            ssh_nudge(calls)
+            row3 = ssh_row(s)
+            ok &= check("the row still reads 3 of 3, never 3 of 1", ssh_in_use(row3, 3, 3))
+            ok &= check("and the ceiling it reports is the new one", "most 1" in row3)
+            ok &= check("the three callers are all still on",
+                        all(c.proc.poll() is None for c in calls))
+        finally:
+            for c in calls:
+                c.close()
+
+        # 0 means the board's figure, not off.
+        ok &= check("CONFIG network opens to type 0", cfg_open(s, b"network", b"Password"))
+        ok &= check("the focus reaches the row", cfg_walk_to(s, b"The most SSH callers at once"))
+        s.buf.clear()
+        s.send(b"\x08" * 3 + b"0" + F1)
+        ok &= check("0 saves", cfg_verdict(s, [b"Saved and live", b"saved, but"]) == b"Saved and live")
+        ok &= check("and reads back as the board's own ten, not as SSH off",
+                    "most 10" in ssh_row(s) and "SSH off" not in ssh_row(s))
+        s.close()
+    finally:
+        stop_copy(proc, tmp)
+
+    # A blank value, which is what a hand edit or a cleared box leaves. The
+    # parser's own branch for it (keyValue: !*val), checked where it can be
+    # written exactly: a board that starts on it must run, say ten, and not
+    # refuse the file.
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "ssh_lines"): ""}))
+    proc = start_copy(tmp, (str(port),))
+    try:
+        log = copy_log(tmp, "cfg: ssh lines", 10)
+        ok &= check("a blank ssh_lines is the board's own figure, and no problem",
+                    "cfg: ssh lines 10 of the board's 10" in log and "problem(s)" not in log)
+        b = Caller(ansi=True, port=port)
+        ok &= check("and the board takes callers", b.wait_for(b"Enter your handle", 12))
+        b.close()
+    finally:
+        stop_copy(proc, tmp)
+
+    # Out of range in the FILE: clamped and said, never refused. This is the
+    # case a restored backup from a bigger board makes, and refusing it would
+    # cost the network, the passwords and every plugin section.
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    cfg.write_text(cfg_with(cfg.read_text(), {("", "ssh_lines"): "99"}))
+    proc = start_copy(tmp, (str(port),))
+    try:
+        log = copy_log(tmp, "cfg: ssh lines", 10)
+        ok &= check("ssh_lines = 99 in the file is clamped, and the console says so",
+                    "ssh_lines 99: this board takes 10, using that" in log)
+        ok &= check("the clamp is not a problem with the file",
+                    "cfg: ssh lines 10 of the board's 10" in log and "problem(s)" not in log)
+        s2, up2 = copy_sysop("SshClampSysop", port)
+        ok &= check("a sysop still logs in, so the staff passwords survived it", up2)
+        ok &= check("the board holds its own ten", "most 10" in ssh_row(s2))
+        # The check that matters: reload() refuses the WHOLE file on any
+        # problem, so a CONFIG save with ssh_lines = 99 still in the file is
+        # what proves the line was dropped rather than counted against it.
+        ok &= check("and CONFIG still saves and goes live with the bad line still there",
+                    cfg_reload(s2) and (ssh_cfg_line(tmp, "ssh_lines") or "").endswith("= 99"))
+        s2.close()
+    finally:
+        stop_copy(proc, tmp)
+    return ok
+
+
+def test_ssh_ten():
+    """Ten SSH callers at once (1.2.2, Rob: "we can also do a full 10 lines
+    ssh right?").
+
+    BBS_SSH_MAX was 8 on every S3, so SSH was a narrower door than telnet: two
+    of the board's ten lines could never be reached over an encrypted link. At
+    ten the SSH ceiling and the caller lines coincide, which is the whole
+    point, so the eleventh caller is refused for LINES and not for SSH slots.
+    The ninth caller is where this fails against 9f60b4e.
+
+    On a copy, with an SSH port of its own for the eleventh: on the shared
+    port a connection past the last node becomes the busy line and is answered
+    in plain text, whereas acceptSsh answers in SSH's own terms."""
+    print("SSH: ten lines at once")
+    why = ssh_ready()
+    if why:
+        print("  SKIP  " + why)
+        return True
+    ok = True
+    port, sport = PORT + 3924, PORT + 3925
+    tmp = copy_data()
+    cfg = tmp / "data" / "user" / "system.cfg"
+    text = "\n".join(ln for ln in cfg.read_text().splitlines()
+                     if not ln.lstrip().startswith("ssh_lines"))
+    cfg.write_text(cfg_with(text + "\n", {("", "ssh_port"): str(sport)}))
+    proc = start_copy(tmp, (str(port),))
+    calls = []
+    try:
+        copy_log(tmp, "speaking first", 10)
+        # The sysop first, and onto the hidden node, so the ten caller lines
+        # are all free for SSH and HARDWARE can be read while they are on.
+        s, up = copy_sysop("SshTenSysop", port)
+        ok &= check("a sysop on the hidden node, leaving all ten lines free", up)
+        ok &= check("with nobody on, the board says it holds ten", "most 10" in ssh_row(s))
+
+        calls, got = ssh_callers(port, MAX_NODES, "SshTen")
+        ok &= check("all ten SSH callers reach the handle prompt (eight was the old ceiling)",
+                    got == MAX_NODES)
+        ssh_nudge(calls)
+        row = ssh_row(s)
+        ok &= check("HARDWARE reads 10 of 10", ssh_in_use(row, 10, 10))
+        ok &= check("and its note still says the ceiling is ten", "most 10" in row)
+        ok &= check("the console logged the tenth as 10 of 10",
+                    "(10 of 10)" in copy_log(tmp, "(10 of 10)", 5))
+
+        # The eleventh, on SSH's own port where the answer is an SSH one.
+        ssh_nudge(calls)
+        data, closed = ssh_raw_hello(sport)
+        ident, packets, rest = parse_ssh_hello(data)
+        code, text2 = ssh_disconnect_reason(packets[0][1]) if packets else (None, None)
+        ok &= check("an eleventh gets the board's identification and one DISCONNECT, reason 12",
+                    ident == b"SSH-2.0-unleashedBBS" and len(packets) == 1
+                    and code == 12 and not rest and closed)
+        ok &= check("refused for the board's lines, not for SSH's own ceiling",
+                    text2 == "--> All lines are busy")
+        ok &= check("no key exchange was started", packets and all(p[0] != 20 for p in packets))
+        ok &= check("the board is still running", proc.poll() is None)
+
+        # A line given back is a line another SSH caller can have.
+        ssh_nudge(calls)
+        calls.pop().close()
+        time.sleep(1.5)
+        again = SshCaller(user="SshTenAgain", port=port)
+        calls.append(again)
+        ok &= check("one caller leaving frees a line for the next SSH caller",
+                    again.said(b"ssh_call: open", 25) and again.wait_for(b"Enter your handle", 25))
+        ssh_nudge(calls)
+        ok &= check("and the board is back at 10 of 10", ssh_in_use(ssh_row(s), 10, 10))
+        s.close()
+    finally:
+        for c in calls:
+            c.close()
+        stop_copy(proc, tmp)
+    return ok
+
+
 def user_exists(handle):
     """An account by that handle in users.txt, any case."""
     p = USERDATA / "users.txt"
@@ -20144,7 +20526,7 @@ ORDER_NAMES = [
     # on a copy of the board, so their ban never reaches this one.
     "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
     "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-    "test_ssh_dedicated_port", "test_ssh_socket_budget",
+    "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten",
     "test_board_fncam", "test_board_espcam", "test_board_ws43b", "test_board_ws2", "test_board_wseth",
     "test_board_mf35", "test_board_mf35v2", "test_board_g4848",
     "test_panel_photo_show",
@@ -22398,37 +22780,37 @@ PROFILE_TESTS = {
                # SSH (1.1.2) is compiled into the S3 profile only.
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
     "fncam":  ["test_board_fncam"],
     "espcam": ["test_board_espcam"],
     # The hardware preview's Waveshares carry SSH too (1.1.2-hw.1).
     "ws43b":  ["test_board_ws43b",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
     "ws2":    ["test_board_ws2", "test_panel_photo_show",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
     "wseth":  ["test_board_wseth",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
     # The Makerfabs carries SSH too (MF35 1.1.0), on 2 MB of PSRAM.
     "mf35":   ["test_board_mf35",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
     # And its hardware v2.0 (MF35V2 1.0.0), SSH on 8 MB of octal PSRAM.
     "mf35v2": ["test_board_mf35v2",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
     # The Guition ESP32-4848S040 (G4848 1.0.0), SSH as every S3 board.
     "g4848":  ["test_board_g4848",
                "test_ssh_login", "test_ssh_new_caller", "test_ssh_signup_no_privacy_offer", "test_ssh_resize", "test_ssh_host_keys",
                "test_ssh_telnet_unchanged", "test_ssh_full", "test_ssh_failed_logins",
-               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_ymodem"],
+               "test_ssh_dedicated_port", "test_ssh_socket_budget", "test_ssh_lines", "test_ssh_ten", "test_ssh_ymodem"],
 }
 # The profiles whose lanes also run with a card (harness.sh --board s3
 # --card --only=ssh is how SSH's YMODEM was tested).
