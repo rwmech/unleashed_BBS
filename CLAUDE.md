@@ -2174,6 +2174,26 @@ this tree.
     therefore gives the **carrier verdict for free** — which is the one
     thing nothing else on the reachability ladder can tell a sysop, and it
     can now be had without opening a port at all.
+  - **It is a TAG BLOCKER for 1.2.2, and the reason is that the copy got
+    written first** (Rob's call, 2026-10-06: build it, keep the copy). The
+    port-map documentation already describes `PORTMAP TEST` and the "Run
+    port map test" button, gated at 1.2.2, while `portmap.h` on
+    `portmap-1.2.2` exposes `tick, askNow, status, whyText, whyShort,
+    whatToDo, line, addrText, externalPort` and no test entry point, and
+    COMMANDS.md documents `PORTMAP` and `PORTMAP NOW` alone. **The site's
+    gate is version-granularity only** (`rels[0]["sort"] >= gate[0]`,
+    sitekit.py ~1125), so it cannot express "1.2.2 only if the feature
+    made it": the day the tag lands, nine reader-facing passages and
+    `/roadmap` point at a button that may not exist. So the command and
+    the button cannot slip out of 1.2.2 without the published docs lying,
+    which is what makes them blockers rather than queue items.
+    **The general shape, worth keeping because it will recur:** a
+    documentation gate keyed on a version is a promise that everything
+    gated at that version ships in it. Writing the copy ahead of the
+    firmware is fine and often better, but it converts a feature from
+    "planned" to "owed", and the conversion is invisible until a tag makes
+    the page wrong. `/roadmap`'s own comment already warns against listing
+    an unbuilt thing as built, after the same mistake one review earlier.
 
 - **CONFIG's page list should show each plugin on or off** (Rob,
   2026-10-05: "Config should show on/off for plugins from config"; queued
