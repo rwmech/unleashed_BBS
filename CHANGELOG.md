@@ -203,7 +203,15 @@ each image rather than off PlatformIO's RAM percentage, which is against
 | ws_s3eth | 266,640 → 266,968 (**+328**) | 75,120 → 74,792 | 1,531,536 → 1,539,184 (+7,648) |
 
 Seven of the twenty-three environments, all with no warnings, and the host
-build. These seven are the four 1.2.2-portmap.2 recorded, so there is a
+build. **`esp32dev`'s row was re-measured afterwards from a clean, plain
+`pio run`** (no `PLATFORMIO_DATA_DIR`, SUCCESS, 0 warnings) and reproduced
+to the byte: 166,104 static DRAM and a 1,291,776 byte image. That matters
+because the sweep that produced these figures set `PLATFORMIO_DATA_DIR`,
+which is part of PlatformIO's project checksum, and once a plain run also
+touched the tree the two wiped each other's `.pio/build` and the remaining
+environments failed in the build system rather than in the compiler. The
+figures are sound; the method was not, and CLAUDE.md now carries the
+symptoms, because none of them looks like the cause. These seven are the four 1.2.2-portmap.2 recorded, so there is a
 delta to give, plus the release twins of the two camera boards. The other
 sixteen were still compiling when this was written and are **not** measured
 here: `esp32dev_release`, `esp32dev_backuptest`, `esp32dev_diag`,

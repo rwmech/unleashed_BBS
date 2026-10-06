@@ -2347,6 +2347,25 @@ this tree.
     port where the inside one belongs would have been answered with success.
     **A stand-in written from a specification still has to ENFORCE the
     specification**, not merely speak it.
+  - **`PLATFORMIO_DATA_DIR` is part of the project checksum, and setting it
+    for some runs and not others wipes `.pio/build` wholesale.** CLAUDE.md
+    already said the variable "must be the same for every pio run in a
+    release, or PlatformIO sees a changed project and wipes the build"; what
+    this lane adds is the mechanism and, more usefully, **what it looks
+    like**, because the symptom does not resemble the cause at all. A sweep
+    script set it, a plain `pio run` did not, and from the moment both had
+    touched the tree the builds began failing in ways that read as a broken
+    toolchain: SCons dying in `SConsign.write()` because it could not create
+    its own `.sconsign311.tmp`, CMake reporting
+    `Include directory '.../bootloader/config' is not a directory`, and
+    `Can not get version for tool: xtensa-esp32-elf-gcc.exe`. Three
+    different, plausible, entirely misleading errors. **The one-line test is
+    `.pio/build/project.checksum`**: run `pio run` with the variable and
+    without it and the hash differs, and its mtime says when the wipe
+    happened. Disk space is the first thing anybody checks and it was 391 GB
+    free. So: **never set `PLATFORMIO_DATA_DIR` for a measurement run**, and
+    when a build fails in the build system rather than in the compiler, look
+    at that checksum before the toolchain.
   - Sizes: CHANGELOG 1.2.2-portmap.3 has the table. **The ESP32-CAM is
     the floor at 2,224 bytes of static DRAM free** (2,544 before this),
     which supersedes the figure in the 1.2.2-portmap.2 entry above: that
