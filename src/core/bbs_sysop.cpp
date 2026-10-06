@@ -2716,14 +2716,19 @@ void Bbs::cmdPortmap(Session& s, const char* arg) {
     statRow(s, "Setting", st.on ? "on" : "off", st.on ? Color::LightGreen : Color::Grey,
             st.on ? nullptr : note("CONFIG network turns it on", "CONFIG network"));
     if (st.on) {
+        // "none" rather than "neither" since UPnP joined the probe
+        // (1.2.2-portmap.3): there are three to say no to now, and the
+        // note names them.
         const char* who = st.asking                        ? "asking"
                         : st.proto == portmap::Proto::Pcp  ? "PCP"
                         : st.proto == portmap::Proto::Pmp  ? "NAT-PMP"
-                        : st.proto == portmap::Proto::None ? "neither"
+                        : st.proto == portmap::Proto::Upnp ? "UPnP"
+                        : st.proto == portmap::Proto::None ? "none"
                                                            : "not asked";
         statRow(s, "Router", who,
                 st.proto == portmap::Proto::None ? Color::Yellow : Color::LightGreen,
-                st.proto == portmap::Proto::None ? note("no PCP, no NAT-PMP", nullptr) : nullptr);
+                st.proto == portmap::Proto::None
+                    ? note("no UPnP, PCP or NAT-PMP", nullptr) : nullptr);
         // The outside address, and the one judgement that matters about it.
         // A private address here means a carrier NAT or a second router,
         // and the mapping is correct and worthless.
@@ -2742,10 +2747,28 @@ void Bbs::cmdPortmap(Session& s, const char* arg) {
             statRow(s, "SSH", num, Color::LightGreen, note("forwarded to this board", "forwarded"));
         }
         if (st.held) {
-            snprintf(num, sizeof(num), "%luh%02lum",
-                     static_cast<unsigned long>(st.leftSecs / 3600u),
-                     static_cast<unsigned long>((st.leftSecs % 3600u) / 60u));
-            statRow(s, "Lease", num, Color::LightGreen, note("renewed at half of it", "renewed at half"));
+            // A UPnP router that would only make a mapping with no expiry
+            // (IGD error 725) gave no lease, so there is no figure to
+            // print: "0h00m" over a working mapping is the
+            // confidently-wrong class PORTMAP exists to avoid. It is still
+            // re-asserted hourly, which is also the only way this board
+            // notices such a router rebooting.
+            if (st.permanent) {
+                // "until off" and not "re-asked hourly": the hourly
+                // re-assert is how a router's reboot is noticed, but what
+                // a sysop needs to know about a mapping with no expiry is
+                // that it stays in the router until this setting is
+                // switched off while the board is running (portmap.h's
+                // Leases note, and COMMANDS.md).
+                statRow(s, "Lease", "none", Color::LightGreen,
+                        note("never expires; off gives it back", "until off"));
+            } else {
+                snprintf(num, sizeof(num), "%luh%02lum",
+                         static_cast<unsigned long>(st.leftSecs / 3600u),
+                         static_cast<unsigned long>((st.leftSecs % 3600u) / 60u));
+                statRow(s, "Lease", num, Color::LightGreen,
+                        note("renewed at half of it", "renewed at half"));
+            }
         }
         if (st.asOf) {
             clk::fmtEpoch(buf, sizeof(buf), "%H:%M", st.asOf);

@@ -55,7 +55,7 @@
 // The µ is UTF-8 (C2 B5). Term::text shows it as µ on ANSI and as "u" on
 // PETSCII and ASCII. Anything that needs plain ASCII uses BBS_HOSTNAME.
 #define BBS_NAME            "\xC2\xB5nleashed BBS"
-#define BBS_VERSION         "1.2.2-portmap.2"
+#define BBS_VERSION         "1.2.2-portmap.3"
 #define BBS_HOSTNAME        "unleashed"  // DHCP and mDNS (unleashed.local)
 
 // BBS_VERSION_SHOWN: the version as every place a person reads one shows it
@@ -472,5 +472,12 @@
 // way round; it is not a guarantee. **Rob declined raising it to 4
 // (2026-10-05)**: a known, documented, narrow race beats an undocumented
 // one, and the busy line is worth more than the margin.
+// Re-derived for UPnP (1.2.2-portmap.3): the worst case is no longer "a
+// socket that exists about two seconds an hour". A full three-protocol
+// probe holds one for about 11.5 s, and a router answering something that
+// could clear by itself repeats it every minute. See portmap.h's Sockets
+// note, which carries the arithmetic. The decision below still stands,
+// because the socket is a transient and `busyFits` is what protects the
+// callers, but it stands on a bigger number than it was taken on.
 #define BBS_SOCK_RESERVE        3
 #endif

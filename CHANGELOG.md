@@ -24,6 +24,197 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2-portmap.3, 2026-10-06
+
+**UPnP, the third port-mapping protocol, because it is the one most routers
+actually have switched on.** 1.2.2-portmap.2 asked in PCP and NAT-PMP, both
+a single datagram to the router on port 5351. UPnP IGD is three protocols
+stacked and is what a consumer router's menu almost always offers, so a
+board that stops at two mostly reports "your router does not do this".
+
+What a sysop sees:
+
+- `PORTMAP`'s **Router** row can now read **UPnP**, and reads **none**
+  rather than "neither" when nothing answered, with the note
+  `no UPnP, PCP or NAT-PMP`.
+- A **Lease** of `none` on a router that will only make a mapping that
+  never expires, with the note `never expires; off gives it back`, rather
+  than a figure that is not a lease. Such a mapping stays in the router
+  until the setting is switched off while the board is running, exactly as
+  a forward made by hand would, and `COMMANDS.md` says so.
+- If the router says the outside number belongs to another machine on your
+  network, the board asks for the next two numbers up and `ANNOUNCE`
+  publishes whichever it got.
+- `PORTMAP NOW` reads the router's description again as well as asking,
+  because a changed router menu is the one thing it is reached for.
+- `SYS`'s **Port map** row says **unmapped** where it used to say **no**.
+  With the setting on and nothing mapped it read exactly as it reads when
+  the setting is off, which is the one question that row answers.
+- The reason for a router that said nothing now has three limbs, not two:
+  `no answer: off, not set up, or does not have it`. The middle one was
+  learned from a real router, a MikroTik with NAT-PMP switched **on** and
+  no interfaces declared, which answers nothing and looks from the board
+  exactly like a router that has never had the feature. `PORTMAP`'s
+  sentence says what to do about each.
+
+What the board speaks, with the clause each rule comes from in
+`src/core/portmap.cpp`'s file comment: an SSDP `M-SEARCH` for
+`upnp:rootdevice`, unicast to the default gateway and to the multicast
+group; an HTTP GET of the `LOCATION` the reply names; and SOAP
+`AddPortMapping`, `DeletePortMapping` and `GetExternalIPAddress` to the
+control URL found inside the description. Everything is driven from the
+tail of `Bbs::tick` on non-blocking sockets, exactly as the two UDP
+protocols are, and one socket exists at a time.
+
+**Our own, not miniupnpc, and the licence and the size were not what
+decided it.** BSD-3-Clause combines with GPLv3 and "less than 50KB code
+size" fits. What rules it out is that its whole API is synchronous
+(`upnpDiscover` waits out its delay, `miniwget`'s `receivedata` is a
+5,000 ms blocking read, `UPNP_AddPortMapping` is a blocking round trip),
+which on the loop is Rule no. 1 broken three ways and which the runner
+cannot take because it is serial; and that `getHTTPResponse` mallocs 2,048
+bytes and reallocs to `Content-Length`, holding the **whole** description
+in one heap block, which on the ESP32-CAM is the "refused for memory" class
+this project has hit three times. The scan here holds none of the document:
+it is fed byte by byte as it arrives through nine small literal matchers, so
+a twenty-kilobyte description costs the same couple of hundred bytes as a
+two-kilobyte one.
+
+Found by the code review before any of this was tested, each with the
+smallest fix rather than the first one:
+
+- `PORTMAP NOW` and a `CONFIG network` save threw the UPnP discovery away
+  **at once**, and the shell runs earlier in a pass than `portmap::tick`.
+  A forget landing between a request's first and last byte put
+  `POST  HTTP/1.1 / HOST: -:0` on the wire, or a splice of two requests, and
+  the router's 400 came back as "your router said no" for an hour on a
+  router that works. It is a flag consumed between exchanges now.
+- **An SSDP reply is a redirect, and that breaks the guard the design rested
+  on.** A PCP or NAT-PMP reply carries no address the board then goes and
+  contacts; `LOCATION` is one. UDP source addresses spoof, so one datagram
+  from anything on the LAN made the board fetch a stranger's description,
+  take their control URL, believe their outside address, and publish their
+  port to the directory as the one callers should dial. `LOCATION`'s host,
+  and an absolute control URL's, must now be the default gateway's.
+- A control URL goes straight into `POST %s HTTP/1.1\r\n`, so one CR LF
+  inside it was a second request of the description author's choosing, sent
+  from the board's own trusted address. Anything but printable non-space
+  bytes voids the capture whole.
+- A board settled on one protocol and holding nothing never tried the other
+  two, so a router swapped for one that speaks something else was never
+  found: the same shape as the bug `giveUp`'s own comment describes, one
+  case further out. A round with nothing held now starts at PCP and walks
+  all three.
+- A control service **moved** by a router firmware update was refused every
+  hour for ever rather than looked for again, which `giveUp`'s comment
+  claimed to cover and did not.
+- `kHdrRoom` was **four bytes** short of the longest control URL the capture
+  allows, and past it the sysop was told "your router does not do this"
+  about a router that does, with nothing naming the cause. 448 now, counted
+  literal by literal, and the refusal is logged.
+- Smaller: a connect failure reported as a socket shortage (so a dead
+  control URL was retried for ever while the board blamed itself); a
+  `memcpy` of a buffer's indeterminate tail; `left == 0` used as "no lease
+  recorded" when it is also a real remainder; a matcher left part way
+  through one `<service>` completing on the next; a failed `bind` that made
+  its own comment untrue without saying so.
+
+And in `tools/fake_router.py`, which is the stand-in router written from the
+specifications and sharing nothing with the firmware, two findings worth
+more than any of the above because a tolerant stand-in agrees with a
+firmware bug instead of exposing it:
+
+- `--fault taken` refused **every** first sighting of a number, and the
+  board walks **up** through numbers rather than re-asking for the same one,
+  so the whole walk was refused and the granted-on-another-number path, the
+  only one that proves `externalPort()` and announce publish the walked
+  number, was unreachable.
+- `AddPortMapping` was granted with its required arguments missing, and a
+  non-numeric one killed the process rather than answering 402. A firmware
+  change that sent the outside port where the inside one belongs would have
+  been answered with success.
+
+It also gained the faults that make the two HIGH findings provable rather
+than merely claimed: `ctlelsewhere` (a `LOCATION` on a third host),
+`ctlcrlf` (a control URL carrying a request line of its own), `ctllong` (95
+characters, which is what found the four-byte shortfall) and `hugedesc`
+(past the board's 64 KB cap).
+
+**A second review pass, on the fixes**, which is where this project has
+repeatedly found that a fix introduced its own defect. Six of the eleven
+were clean; the rest left something:
+
+- **`SYS` and `CONFIG network` said "mapped" over a router with no outside
+  address of its own.** The first pass made that case
+  `Why::GatewayBusy` rather than `Why::Ok`, and fixed the reason without
+  fixing the two surfaces that branch on "is a mapping held" and never
+  reach the reason. It is a settled state, not a flicker: such a router is
+  re-asked once a minute for ever, so a sysop read `-:6400 mapped, 1h59m
+  left` over a board no caller can reach. `PORTMAP` was right all along,
+  which is why nothing noticed. The surface that cannot show an address is
+  no longer the one that says "mapped".
+- **Switching the setting off re-discovered the router before giving a
+  permanent mapping back.** A `CONFIG network` save calls the same
+  "ask again" path whether it switched the feature on or off, and that
+  armed the re-discovery, which the give-back then consumed: the
+  `DeletePortMapping` had to complete a whole fresh search and description
+  fetch inside eight seconds before it could be sent. On a router that
+  only grants permanent mappings, that give-back is the only thing that
+  closes the hole.
+- **The give-back could leave the SSH mapping behind**, because it counted
+  attempts rather than slots: with a router that answered the add and not
+  the delete, the telnet mapping was asked about twice and the SSH one
+  never. One try per held mapping now.
+- **A refused control URL was reported as "its description has no
+  port-forwarding service".** It has one; the board would not use its
+  address. Two different evenings, and the board now names the right one.
+- **The "no PCP or NAT-PMP and no UPnP" console line had started printing
+  once an hour** instead of once, because the fix that re-probes a settled
+  protocol resets the very flag that used to silence it. It was also
+  untrue of a router that answered UPnP and simply had too long a control
+  address.
+- The matcher precondition is a `static_assert` now rather than a comment
+  claiming a test that did not exist, which is the fourth time in this
+  project a comment asserting a property was believed.
+- And three assertions in two previously-green tests were grepping for
+  console text this lane reworded, which would have read as a regression
+  in the source-address guard. Fixed here rather than at the next run.
+
+Left on purpose, each with its reasoning in the code: the lease shown
+beside the port can belong to the other mapping on a board holding one
+permanent and one leased (it errs toward under-claiming, and `PORTMAP`
+shows them separately); a description writing `<service >` yields no
+control URL, because the alternative is a tag parser; and the stand-in's
+`hugedesc` fault wins its race against the eight-second budget only by
+about 1.5x on the harness's fast clock, which a test should allow for.
+
+Sizes, off the ELF, against `cca169a`, measured by reading `_bss_end` out of
+each image rather than off PlatformIO's RAM percentage, which is against
+327,680 and is not the truth (CLAUDE.md).
+
+<!-- SIZES -->
+
+**UPnP has not run on hardware.** Every testing plan needs Rob's explicit
+OK, so this lane is the code reviews and the builds and nothing else, and
+the stand-in router's UPnP side has had its syntax checked and not been run.
+
+**The two protocols it joins now have, for the first time.** Agentville's
+MikroTik granted a NAT-PMP mapping once Rob declared its interfaces: Router
+NAT-PMP, the outside address on the internet, the telnet port forwarded,
+lease 1h59m. PCP stayed silent in the same exchanges, so that box is NAT-PMP
+only, and its UPnP is switched off, which is why the new path is still
+unproven on glass. Eight successful exchanges moved neither the slow-pass
+count nor the worst pass, and four forced re-asks were all re-granted, so
+the refresh path works; the half-lease timer that fires it unattended is the
+one piece nobody has waited out.
+
+**And the carrier verdict was checked against reality rather than against a
+stand-in.** NAT-PMP handed back an address, the directory independently
+reports seeing the board at the same one to the octet, and the board
+rendered it `on the internet`. Two unrelated paths agreeing is the premise
+the whole carrier test rests on, and this is the first time it has been
+confirmed; behind a carrier NAT it is exactly where the two would diverge.
+
 ## 1.2.2-portmap.2, 2026-10-05
 
 **The board asks the router to forward its own ports**, so a sysop opens no

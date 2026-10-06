@@ -118,7 +118,11 @@
 #                   portmap    the router asked to forward (1.2.2); each
 #                              test runs tools/fake_router.py and a board
 #                              copy pointed at it, so none of them touches
-#                              this board
+#                              this board. A UPnP test (1.2.2-portmap.3)
+#                              needs the stand-in's --ssdp-port and
+#                              --http-port given explicitly and the board
+#                              pointed at the first with BBS_HOST_SSDP;
+#                              portmap_board does both
 #
 #                 tools/harness.sh --tag m --card --only=messaging
 #                 tools/harness.sh --tag m --card --only=forums,sysinfo

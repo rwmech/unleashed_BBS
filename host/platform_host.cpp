@@ -331,6 +331,18 @@ const HostGw& hostGw() { static const HostGw g; return g; }
 uint32_t gatewayIp() { return hostGw().addr; }
 uint16_t hostGatewayPort() { return hostGw().port; }
 
+// BBS_HOST_SSDP is the stand-in router's SSDP port. Unset means 1900, which
+// a lane will not be able to bind; every port-mapping test that wants UPnP
+// sets it, and one that does not gets a board whose UPnP search goes
+// nowhere, which is a case worth being able to run too.
+uint16_t hostSsdpPort() {
+    static const uint16_t p = []() -> uint16_t {
+        const char* e = getenv("BBS_HOST_SSDP");
+        return (e && *e) ? static_cast<uint16_t>(strtoul(e, nullptr, 10)) : 0;
+    }();
+    return p;
+}
+
 #ifdef BBS_HAS_ETH
 // Ethernet on the host (1.1.2, the ESP32-S3-ETH profile): a wire at 100 Mb/s
 // full duplex with an address, which is how the board runs on a LAN. The

@@ -2897,11 +2897,25 @@ bool Bbs::rowSys(Session& s) {
         // "Mapped", never "reachable": see core/portmap.h.
         case 8: {
             const portmap::Status pm = portmap::status();
+            // "unmapped" and not "no", which is what this said until
+            // 1.2.2-portmap.3: with the setting ON and nothing mapped the
+            // row read "Port map  no", which is exactly how it reads when
+            // the setting is off, and a sysop checking whether they had
+            // switched it on could not tell from the row that answers that
+            // question. The reason is in the note beside it either way.
+            // Eight characters, inside the 9 the value column holds.
+            // "no addr" comes before "mapped" on purpose: a router that
+            // granted a mapping while having no outside address of its own
+            // is held with external == 0, and this row used to call that
+            // "mapped" while PORTMAP called it "your router has no address
+            // of its own" (the code review's second pass). Seven
+            // characters, inside the 9 the value column holds.
             const char* word = !pm.on                  ? "off"
+                             : pm.held && !pm.external ? "no addr"
                              : pm.held && pm.carrier   ? "carrier"
                              : pm.held                 ? "mapped"
                              : pm.asking               ? "asking"
-                                                       : "no";
+                                                       : "unmapped";
             // Its own buffer: portmap::line's wide form runs to 55, where
             // this function's shared buf is 48 and would have cut the "as
             // of" off the end without saying so.

@@ -266,6 +266,13 @@ uint32_t gatewayIp();
 // the protocols' port is fixed at 5351; on the host the test lanes run side
 // by side and nothing should have to bind one shared number.
 uint16_t hostGatewayPort();
+
+// hostSsdpPort (host build only): the port of the stand-in router's SSDP
+// responder, from BBS_HOST_SSDP, 0 when it is not set. On a board SSDP's
+// port is 1900 (UPnP Device Architecture 1.1 section 1.3.1); a host test
+// cannot bind one shared number across lanes, for the same reason
+// hostGatewayPort exists. A board build has neither.
+uint16_t hostSsdpPort();
 #endif
 
 #ifdef BBS_HAS_ETH

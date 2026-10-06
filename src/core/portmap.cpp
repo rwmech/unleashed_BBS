@@ -94,6 +94,86 @@
  *   mile, while a gateway with a coarse clock can trip the tight one for
  *   nothing and the cost of a false positive is a pointless re-request.
  *
+ * UPnP IGD, UPnP Device Architecture 1.1 and the IGD service template
+ *   Three protocols stacked, and the board speaks the smallest useful part
+ *   of each. Every number below is from the specification, not from memory.
+ *
+ *   1. SSDP search (UDA 1.1 section 1.3.2). An M-SEARCH request over UDP:
+ *        M-SEARCH * HTTP/1.1
+ *        HOST: 239.255.255.250:1900
+ *        MAN: "ssdp:discover"
+ *        MX: 2
+ *        ST: upnp:rootdevice
+ *      sent to the multicast group AND unicast to the default gateway. Two
+ *      sends because the multicast one is what the specification describes
+ *      and the unicast one (UDA 1.1's own "unicast search", same headers to
+ *      the device's port 1900) reaches a router whose LAN bridge drops
+ *      multicast, which some do. The reply is a datagram of HTTP-shaped
+ *      headers whose LOCATION names the device description.
+ *
+ *      ST is upnp:rootdevice rather than InternetGatewayDevice:1, and that
+ *      is a deliberate trade. The narrower search misses an IGD:2 router
+ *      that does not also advertise :1, and miniupnpc works round it by
+ *      sending four searches in turn. The wider one is answered by every
+ *      UPnP device on the LAN, a television and a printer included, and
+ *      what makes it safe here is that only the gateway's own answer is
+ *      read: the source address is checked against plat::gatewayIp the same
+ *      way the UDP protocols' replies are. A router that answers and has no
+ *      WAN connection service is then the same outcome as one that does not
+ *      answer, which is the truth about it.
+ *
+ *      Header names in SSDP are case-insensitive (it is HTTP's grammar), so
+ *      LOCATION is found case-insensitively; everything else here is XML,
+ *      which is not.
+ *
+ *   2. The device description, fetched with an ordinary HTTP/1.1 GET of
+ *      LOCATION's path. Inside it, the service this board wants is a
+ *      <service> whose <serviceType> is
+ *        urn:schemas-upnp-org:service:WANIPConnection:1   (or :2, IGD2)
+ *        urn:schemas-upnp-org:service:WANPPPConnection:1  (a PPP link)
+ *      and what is wanted out of that element is its <controlURL>. The
+ *      template in UDA 1.1 section 2.3 puts serviceType first and
+ *      controlURL fourth, but the scan here does not rely on that: it keeps
+ *      the last controlURL seen inside the current <service> and decides at
+ *      </service>, so either order works for one buffer.
+ *
+ *   3. SOAP, one POST per action to that control URL. Three actions:
+ *        AddPortMapping          NewRemoteHost (empty), NewExternalPort,
+ *                                NewProtocol, NewInternalPort,
+ *                                NewInternalClient, NewEnabled,
+ *                                NewPortMappingDescription,
+ *                                NewLeaseDuration
+ *        DeletePortMapping       NewRemoteHost, NewExternalPort, NewProtocol
+ *        GetExternalIPAddress    no arguments; answers
+ *                                <NewExternalIPAddress>
+ *      A fault comes back as HTTP 500 carrying
+ *      <UPnPError><errorCode>NNN</errorCode>, and the codes that mean
+ *      something different from "no" are:
+ *        402 invalid args, 501 action failed, 606 not authorised
+ *        713 specified array index invalid
+ *        714 NoSuchEntryInArray   (a delete of a mapping that is not there,
+ *                                 which is a successful delete)
+ *        718 ConflictInMappingEntry  the external port belongs to another
+ *                                 internal host, so another number is
+ *                                 tried: that is what externalPort() and
+ *                                 announce's published port are for
+ *        725 OnlyPermanentLeasesSupported  the lease is asked for again as
+ *                                 0, which the IGD template defines as
+ *                                 never expiring
+ *      AddPortMapping returns no values, so the external port of a granted
+ *      mapping is the one that was asked for and not one read back. IGD2's
+ *      AddAnyPortMapping does return a port and is not used.
+ *
+ *      Nothing here reads the HTTP status line. What decides the answer is
+ *      the body: an errorCode is a fault, an <action>Response is a success,
+ *      and a connection that closes with neither is a refusal with no code.
+ *      That is one parse rather than two, and it cannot disagree with
+ *      itself the way a 200 carrying a fault would.
+ *
+ *   The description is scanned as it arrives and never held (portmap.h,
+ *   Rule no. 1), which is why the matching is the little Lit machines below
+ *   rather than strstr over a buffer.
+ *
  * Libraries:    none (libc, BSD sockets)
  * Targets:      ESP32-WROOM-32E (ESP-IDF 5.3.1) and the Linux host build
  * See also:     src/core/portmap.h
@@ -128,11 +208,13 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>            // strncasecmp: SSDP header names have no case
 
 namespace portmap {
 namespace {
@@ -177,12 +259,18 @@ constexpr uint8_t  kSlots    = 1;
 
 // Which protocol an exchange is speaking. Not Proto, because an exchange
 // can be in PCP while the settled answer is still Unknown.
-constexpr uint8_t kAskPcp = 0;
-constexpr uint8_t kAskPmp = 1;
+constexpr uint8_t kAskPcp  = 0;
+constexpr uint8_t kAskPmp  = 1;
+constexpr uint8_t kAskUpnp = 2;
 
 constexpr uint8_t F_WANT  = 0x01;   // this port should be mapped
 constexpr uint8_t F_HELD  = 0x02;   // granted, and its lifetime has not run out
 constexpr uint8_t F_NONCE = 0x04;   // the PCP nonce is set, so a refresh reuses it
+// Granted with no expiry: a UPnP router that answered 725 and took a lease
+// of 0, which the IGD template defines as never expiring. lifeSecs then
+// says nothing about this mapping and lapse() must leave it alone, which is
+// the whole reason the flag exists rather than a sentinel in lifeSecs.
+constexpr uint8_t F_PERM  = 0x08;
 
 struct Slot {
     uint16_t internal  = 0;
@@ -191,6 +279,12 @@ struct Slot {
     uint32_t grantedAt = 0;         // millis of the grant
     uint8_t  nonce[12] = {};        // PCP's, per mapping (RFC 6887 section 11.2)
     uint8_t  flags     = 0;
+    // How many outside port numbers have been tried for this mapping after
+    // a UPnP 718 ConflictInMappingEntry, which says the number belongs to
+    // another host on the LAN. Reset on a grant and on a changed port. The
+    // other two protocols need none of this: they pick a free number
+    // themselves and tell the board which one.
+    uint8_t  clash     = 0;
 };
 
 Slot     g_slot[kSlots];
@@ -202,6 +296,12 @@ uint8_t  g_at       = 0;            // the slot this exchange is about
 uint8_t  g_tries    = 0;            // sends made in this exchange
 uint8_t  g_ask      = kAskPcp;      // which protocol it is speaking
 uint8_t  g_release  = 0;            // lifetime-0 requests still to try, on the way out
+// Which slots the give-back has already asked about, one bit each. g_release
+// counted ATTEMPTS, so with two mappings and a router that answers the add
+// and not the delete, slot 0 was asked twice and slot 1 never: on a UPnP
+// router that only grants permanent mappings, that is an SSH hole left open
+// for good (the code review's second pass). One try per held slot now.
+uint8_t  g_relTried = 0;
 bool     g_addrAsk  = false;        // this exchange is NAT-PMP's public-address request
 bool     g_delete   = false;        // ... or a lifetime 0
 // NAT-PMP's public-address request has been made for the address we hold.
@@ -216,6 +316,11 @@ bool     g_force    = false;
 // wrong: a stale one costs one extra address request.
 bool     g_mapTried = false;
 uint32_t g_sentAt   = 0;
+// When the exchange in flight started, for UPnP's whole-exchange budget.
+// The UDP protocols count sends instead, because each send is one datagram
+// and the answer is the next one; a UPnP exchange is three protocols deep
+// and a stall can be in any of them.
+uint32_t g_began    = 0;
 // "Nothing before g_waitMs has passed since g_waitFrom". A deadline held as
 // a stamp and compared signed reads "not yet" again after 24.86 days (the
 // review of 1.2.0-panel.1), so every wait here is an elapsed time through
@@ -228,17 +333,204 @@ uint32_t g_ext      = 0;            // the router's outside address, network ord
 uint32_t g_epoch    = 0;            // the gateway's clock, last seen
 uint32_t g_epochAt  = 0;            // and the millis we saw it
 uint32_t g_asOf     = 0;            // clk::epoch of the last ANSWER, 0 never
-uint8_t  g_code     = 0;            // the protocol's own last result code
+// The protocol's own last result code. 16 bits because UPnP's are three
+// digits (402, 718, 725) where the two UDP protocols' are one or two.
+uint16_t g_code     = 0;
 // What refused() last said on the console, so it says it again only when
 // the reason or the code moves. Its own, because g_code is set by the
 // callers before they call.
 Why      g_loggedWhy  = Why::Ok;
-uint8_t  g_loggedCode = 0xFF;
+uint16_t g_loggedCode = 0xFFFF;
 uint16_t g_asked    = 0;
 uint16_t g_failed   = 0;
 
 void waitFor(uint32_t now, uint32_t ms) { g_waitFrom = now; g_waitMs = ms; }
+
+// askOf: the exchange kind for a protocol already settled on. Unknown and
+// None both answer PCP, which is where a fresh probe starts.
+uint8_t askOf(Proto p) {
+    return p == Proto::Pmp ? kAskPmp : p == Proto::Upnp ? kAskUpnp : kAskPcp;
+}
 bool  waiting(uint32_t now) { return g_waitMs && plat::since(now, g_waitFrom) < g_waitMs; }
+
+// ===========================================================================
+// UPnP IGD. See the file comment for the protocols and the clause each rule
+// comes from. Everything here is spread across ticks: the whole feature's
+// one rule is that no pass of the loop waits for the network.
+// ===========================================================================
+
+// SSDP's group and port (UDA 1.1 section 1.3.1). The port is a constant on
+// a board; on the host a test names its stand-in router's in BBS_HOST_SSDP,
+// because 1900 is one number and the lanes run side by side.
+constexpr uint16_t kSsdpPort  = 1900;
+// 239.255.255.250, turned into network order with htonl at the send rather
+// than written out as a packed literal: the literal is right only on a
+// little-endian target, which both of ours are and neither of which should
+// be the reason a constant is correct.
+constexpr uint32_t kSsdpHost  = 0xEFFFFFFAu;
+
+// The whole exchange's budget, from begin() to an answer: an SSDP search, a
+// description that may be twenty kilobytes and a SOAP round trip, all on a
+// LAN. Past it the exchange is abandoned exactly as a silent UDP one is.
+// Generous on purpose: the cost of being slow here is nothing, and the cost
+// of being impatient is a router that works being reported as absent.
+constexpr uint32_t kUpnpMs    = 8000;
+
+// What one pass may read and scan. 512 bytes of scanning is single-figure
+// microseconds and two recv calls are tens, so a pass stays far inside the
+// 100 us line; a description arriving in 512 byte bites still finishes in a
+// fraction of a second, because the loop runs hundreds of passes in one.
+constexpr uint16_t kUpnpChunk = 256;
+constexpr uint8_t  kUpnpReads = 2;
+
+// And the most of a description that is ever looked at. A router that
+// streams for ever, or one whose description genuinely has no WAN service
+// in the first 64 KB, is a router this does not work with; the alternative
+// is a loop with no end in it.
+constexpr uint32_t kUpnpMaxXml = 65536;
+
+// Outside port numbers tried after a 718 before giving up. Three: the one
+// the board listens on, and two above it. More would be a port scan of the
+// router's own table, and a sysop who needs a fourth has a conflict worth
+// looking at by hand.
+constexpr uint8_t  kClashTries = 3;
+
+// What a mapping is called in the router's own table. A sysop reading that
+// table should recognise it at once; this is the only string the board puts
+// in somebody else's user interface.
+constexpr char kMapDesc[] = "unleashed BBS";
+
+// Where a UPnP exchange has got to.
+constexpr uint8_t U_SEARCH = 0;     // SSDP out, waiting for a LOCATION
+constexpr uint8_t U_DESC   = 1;     // GET the description, scan for a control URL
+constexpr uint8_t U_SOAP   = 2;     // POST the action, scan for its answer
+
+// Which action a U_SOAP exchange is making.
+constexpr uint8_t A_ADD = 0;
+constexpr uint8_t A_DEL = 1;
+constexpr uint8_t A_EXT = 2;
+
+// The service types, in the order they are preferred. WANIPConnection is an
+// ordinary routed link and WANPPPConnection is a PPP one (DSL); a router
+// with both answers on either, and the IP one is the right first guess.
+constexpr uint8_t S_IP  = 0;
+constexpr uint8_t S_PPP = 1;
+
+// ---------------------------------------------------------------------------
+// Lit: one literal, matched across read boundaries so the description never
+// has to be held. feed() returns true on the byte that completes it.
+//
+// The restart is the naive one, "does this byte start the pattern again",
+// which is EXACT for every pattern whose first byte never recurs inside it.
+// A pattern like "aab" would need the real failure function. That condition
+// is checkable at compile time, so litSafe below checks it rather than a
+// comment hoping somebody reads it: the fourth time in this project's
+// history that a comment asserting a property was believed is three times
+// too many.
+// ---------------------------------------------------------------------------
+constexpr bool litSafe(const char* p) {
+    for (size_t i = 1; p[i]; ++i)
+        if (p[i] == p[0]) return false;
+    return true;
+}
+struct Lit {
+    const char* pat;
+    uint8_t     at;
+    bool feed(char c) {
+        if (c == pat[at]) {
+            if (!pat[++at]) { at = 0; return true; }
+            return false;
+        }
+        at = (c == pat[0]) ? 1 : 0;
+        return false;
+    }
+    void reset() { at = 0; }
+};
+
+// What the scanner is currently copying out, 0 for nothing. A capture runs
+// from the byte after its literal to the next '<', which is how XML element
+// text ends.
+constexpr uint8_t C_NONE = 0;
+constexpr uint8_t C_CTL  = 1;       // a <controlURL>, into g_uCtl
+constexpr uint8_t C_VER  = 2;       // the digit after "WANxxConnection:"
+constexpr uint8_t C_ERR  = 3;       // a SOAP <errorCode>, into g_uCode
+constexpr uint8_t C_IP   = 4;       // <NewExternalIPAddress>, into g_uVal
+
+uint8_t  g_uStage  = U_SEARCH;
+uint8_t  g_uAct    = A_ADD;
+uint32_t g_uHost   = 0;             // the description and control host, network order
+uint16_t g_uHttp   = 0;             // and its TCP port
+char     g_uPath[96] = {};          // LOCATION's path, for the GET
+char     g_uCtl[96]  = {};          // the control URL's path; also the scan's capture
+char     g_uVal[16]  = {};          // the outside address a GetExternalIPAddress gave
+uint8_t  g_uSvc    = S_IP;          // which service the control URL belongs to
+uint8_t  g_uVer    = 1;             // its version digit, 1 or 2
+bool     g_uPerm   = false;         // ask for lease 0: this router gave 725
+// Throw the discovery away before the NEXT exchange, rather than now.
+//
+// PORTMAP NOW and a CONFIG network save both reach askNow, and the shell
+// runs earlier in a pass than Bbs::tick calls portmap::tick, so an
+// immediate upnpForget() could land between a SOAP request's first and last
+// byte: sendUpnpReq rebuilds the request from g_uCtl, g_uHost and g_uHttp on
+// every pass, so a forget mid-send puts "POST  HTTP/1.1 / HOST: -:0" on the
+// wire, or a splice of two different requests, and the router's 400 came
+// back as "your router said no" for an hour on a router that works. It is a
+// flag consumed by upnpBegin instead, which only ever runs between
+// exchanges (the code review, HIGH).
+bool     g_uRefind = false;
+// The last upnpBegin failed at socket() rather than at connect(). See
+// begin()'s UPnP arm: the two want different answers and only this can
+// tell them apart.
+bool     g_noSock  = false;
+// Where a TCP stage has got to. Three states rather than a "connected"
+// flag, because "the request is all away" is a third thing and rebuilding
+// the request on a pass that has nothing left to send is waste.
+constexpr uint8_t P_CONN = 0;
+constexpr uint8_t P_SEND = 1;
+constexpr uint8_t P_READ = 2;
+uint8_t  g_uPhase  = P_CONN;
+bool     g_uDone   = false;         // the answer this exchange wanted has been seen
+uint16_t g_uSent   = 0;             // bytes of the request already away
+uint16_t g_uCode   = 0;             // the SOAP errorCode, 0 none
+uint32_t g_uRead   = 0;             // bytes of body scanned, against kUpnpMaxXml
+uint8_t  g_uCap    = C_NONE;
+uint8_t  g_uCapLen = 0;
+uint16_t g_uExt    = 0;             // the outside port this exchange asked for
+// Set while a <service> element is open, and cleared at its end, so a
+// controlURL and a serviceType can arrive in either order inside it.
+bool     g_uInSvc  = false;
+// A control URL went past and was refused for holding a byte an HTTP
+// request line must not carry. Kept because the two failures want different
+// words: a description with no WAN service is one thing a sysop can do
+// nothing about, and a description whose control URL this board will not
+// use is a hand-made forward (the code review's second pass; the header's
+// second Honest rule).
+bool     g_uCtlBad = false;
+bool     g_uSvcHit = false;         // this service is a WAN connection one
+bool     g_uCtlHit = false;         // and a controlURL has been captured for it
+
+// The literals, one set per stage. Their match positions are state, which
+// is the whole point: a pattern may be cut in half by a recv boundary.
+Lit g_lSvcOpen  { "<service>",                 0 };
+Lit g_lSvcShut  { "</service>",                0 };
+Lit g_lWanIp    { "WANIPConnection:",          0 };
+Lit g_lWanPpp   { "WANPPPConnection:",         0 };
+Lit g_lCtl      { "<controlURL>",              0 };
+Lit g_lErr      { "<errorCode>",               0 };
+Lit g_lAddOk    { "AddPortMappingResponse",    0 };
+Lit g_lDelOk    { "DeletePortMappingResponse", 0 };
+Lit g_lExtIp    { "<NewExternalIPAddress>",    0 };
+
+// Every one of them, against the restart's precondition. A tenth pattern
+// that needs a real failure function fails the build here rather than
+// quietly matching text that is not it.
+static_assert(litSafe("<service>") && litSafe("</service>") &&
+              litSafe("WANIPConnection:") && litSafe("WANPPPConnection:") &&
+              litSafe("<controlURL>") && litSafe("<errorCode>") &&
+              litSafe("AddPortMappingResponse") &&
+              litSafe("DeletePortMappingResponse") &&
+              litSafe("<NewExternalIPAddress>"),
+              "a Lit pattern whose first byte recurs needs a real failure function");
 
 // ---------------------------------------------------------------------------
 // privateAddr: an address callers on the internet cannot reach. The point
@@ -289,6 +581,11 @@ uint16_t gatewayPort() {
     return kPort;
 }
 
+// Declared here and defined with the rest of the UPnP machinery below:
+// drop() needs it, and the shortest honest way to say so is a prototype
+// rather than moving three stages of a protocol above it.
+void upnpForget();
+
 void closeFd() {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
 }
@@ -316,11 +613,18 @@ void closeFd() {
 // clears the nonce there.
 void drop() {
     for (uint8_t i = 0; i < kSlots; ++i) {
-        g_slot[i].flags &= static_cast<uint8_t>(~F_HELD);
+        g_slot[i].flags &= static_cast<uint8_t>(~(F_HELD | F_PERM));
         g_slot[i].external = 0;
+        g_slot[i].clash    = 0;
     }
     g_ext      = 0;
     g_extAsked = false;
+    // And whatever UPnP discovery found, because the two callers of this
+    // are a changed network and a gateway that lost its state, and in both
+    // the description's address is a guess. One SSDP search and one GET is
+    // what re-finding it costs; believing a stale control URL costs an hour
+    // of a sysop reading "your router said no".
+    upnpForget();
 }
 
 bool anyHeld() {
@@ -351,7 +655,8 @@ void want(uint16_t telnet, uint16_t ssh) {
         if (s.internal != ports[i]) {
             s.internal = ports[i];
             s.external = 0;
-            s.flags &= static_cast<uint8_t>(~(F_HELD | F_NONCE));
+            s.clash    = 0;
+            s.flags &= static_cast<uint8_t>(~(F_HELD | F_NONCE | F_PERM));
         }
         if (ports[i]) s.flags |= F_WANT;
         else          s.flags &= static_cast<uint8_t>(~F_WANT);
@@ -366,6 +671,10 @@ void lapse(uint32_t now) {
     for (uint8_t i = 0; i < kSlots; ++i) {
         Slot& s = g_slot[i];
         if (!(s.flags & F_HELD)) continue;
+        // A UPnP router that would only make a permanent mapping gave no
+        // lease to run out, so lifeSecs says nothing about this one: it is
+        // re-asserted hourly like the rest and never expires here.
+        if (s.flags & F_PERM) continue;
         if (plat::since(now, s.grantedAt) / 1000u < s.lifeSecs) continue;
         s.flags &= static_cast<uint8_t>(~F_HELD);
         s.external = 0;
@@ -402,6 +711,621 @@ bool forgot(uint32_t epoch, uint32_t now) {
     const uint32_t mine  = plat::since(now, g_epochAt) / 1000u;
     const uint32_t least = g_epoch + (mine - mine / 8u);   // 7/8 of my elapsed time
     return epoch + 2u < least;
+}
+
+// ===========================================================================
+// UPnP IGD, the three stages. Nothing below waits for the network.
+// ===========================================================================
+
+// ssdpPort: 1900 on a board (UDA 1.1 section 1.3.1). On the host a test
+// names its stand-in router's port, for the same reason gatewayPort does.
+uint16_t ssdpPort() {
+#ifdef BBS_HOST
+    const uint16_t p = plat::hostSsdpPort();
+    if (p) return p;
+#endif
+    return kSsdpPort;
+}
+
+// svcUrn: the service type this board found, written out. The SOAPACTION
+// header and the action element's xmlns must both carry the service type
+// the control URL belongs to, and a router with a WANPPPConnection answers
+// nothing to a WANIPConnection action.
+const char* svcUrn(char* out, size_t n) {
+    snprintf(out, n, "urn:schemas-upnp-org:service:WAN%sConnection:%u",
+             g_uSvc == S_PPP ? "PPP" : "IP", static_cast<unsigned>(g_uVer));
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// upnpForget: throw away what discovery found, so the next exchange starts
+// at the SSDP search again.
+//
+// Called where the network moved under the board (drop) and where the
+// control URL stopped working, never merely because an action was refused:
+// a router that says 718 has answered, and re-discovering it would turn one
+// refusal into a full three-stage round every minute.
+// ---------------------------------------------------------------------------
+void upnpForget() {
+    g_uHost    = 0;
+    g_uHttp    = 0;
+    g_uPath[0] = '\0';
+    g_uCtl[0]  = '\0';
+    g_uVal[0]  = '\0';
+    g_uSvc     = S_IP;
+    g_uVer     = 1;
+    // g_uPerm is NOT cleared: it is a fact about this router's firmware,
+    // learned from a 725, and a router does not stop being
+    // permanent-leases-only because the board re-read its description.
+    // Clearing it would send the same 7200 again and collect the same 725,
+    // once an hour, for ever.
+}
+
+// resetScan: the matchers and the per-element flags, before a body is read.
+// Every Lit holds a match position, so a stale one would see the first half
+// of a pattern that arrived in the LAST reply.
+void resetScan() {
+    g_lSvcOpen.reset(); g_lSvcShut.reset();
+    g_lWanIp.reset();   g_lWanPpp.reset();  g_lCtl.reset();
+    g_lErr.reset();     g_lAddOk.reset();   g_lDelOk.reset(); g_lExtIp.reset();
+    g_uCap    = C_NONE;
+    g_uCapLen = 0;
+    g_uInSvc  = false;
+    g_uSvcHit = false;
+    g_uCtlHit = false;
+    g_uCtlBad = false;
+    g_uDone   = false;
+    g_uRead   = 0;
+    g_uCode   = 0;
+}
+
+// ---------------------------------------------------------------------------
+// sendSsdp: one M-SEARCH. Twice over: to the group, which is what the
+// specification describes, and unicast to the gateway, which is UDA 1.1's
+// own unicast search and reaches a router whose LAN bridge drops multicast.
+// The unicast form carries the device's own HOST and no MX, as the
+// specification has it, rather than the multicast message sent to a second
+// address.
+// ---------------------------------------------------------------------------
+void sendSsdp(uint32_t now) {
+    char req[256];
+    char host[16];
+    sockaddr_in to = {};
+    to.sin_family = AF_INET;
+
+    // Unicast, to the router itself. First, because it is the one that
+    // matters on a host test and on a router that filters the group.
+    addrText(g_gw, host, sizeof(host));
+    snprintf(req, sizeof(req),
+             "M-SEARCH * HTTP/1.1\r\n"
+             "HOST: %s:%u\r\n"
+             "MAN: \"ssdp:discover\"\r\n"
+             "ST: upnp:rootdevice\r\n"
+             "\r\n", host, static_cast<unsigned>(ssdpPort()));
+    to.sin_port        = htons(ssdpPort());
+    to.sin_addr.s_addr = g_gw;
+    sendto(g_fd, req, strlen(req), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+
+#ifndef BBS_HOST
+    // And to the group. MX is seconds a device may wait before answering,
+    // and 1 rather than the specification's suggested larger values because
+    // only the gateway's answer is read and it is on the same subnet: a
+    // longer MX buys a quieter LAN for devices this board ignores anyway.
+    //
+    // Host builds skip this: a test lane has nothing listening on the group
+    // and should not put a datagram on the operator's own network to find
+    // that out.
+    snprintf(req, sizeof(req),
+             "M-SEARCH * HTTP/1.1\r\n"
+             "HOST: 239.255.255.250:%u\r\n"
+             "MAN: \"ssdp:discover\"\r\n"
+             "MX: 1\r\n"
+             "ST: upnp:rootdevice\r\n"
+             "\r\n", static_cast<unsigned>(kSsdpPort));
+    to.sin_port        = htons(kSsdpPort);
+    to.sin_addr.s_addr = htonl(kSsdpHost);
+    sendto(g_fd, req, strlen(req), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+#endif
+
+    g_sentAt = now;
+    ++g_tries;
+}
+
+// ---------------------------------------------------------------------------
+// upnpBegin: start a UPnP exchange about slot i.
+//
+// With a control URL already in hand it goes straight to the SOAP POST;
+// without one it opens the UDP socket and searches. The socket is bound to
+// the board's own address so that on a board with a wired port and a radio
+// both, the search leaves by the interface callers reach the board on,
+// which is the one that needs forwarding to.
+// ---------------------------------------------------------------------------
+// openTcp: a non-blocking connection to the description or control host,
+// and the scanners cleared for the body that will come back. Shared by the
+// SOAP stage and by the hand-off from the description to it.
+bool openTcp(uint32_t now) {
+    closeFd();
+    g_noSock = false;
+    g_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_fd < 0) { g_noSock = true; return false; }
+    const int fl = fcntl(g_fd, F_GETFL, 0);
+    fcntl(g_fd, F_SETFL, fl | O_NONBLOCK);
+    sockaddr_in a = {};
+    a.sin_family      = AF_INET;
+    a.sin_port        = htons(g_uHttp);
+    a.sin_addr.s_addr = g_uHost;
+    const int r = connect(g_fd, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+    if (r == 0) {
+        g_uPhase = P_SEND;
+    } else if (errno == EINPROGRESS || errno == EWOULDBLOCK || errno == EALREADY) {
+        g_uPhase = P_CONN;
+    } else {
+        closeFd();
+        return false;
+    }
+    g_uSent  = 0;
+    g_sentAt = now;
+    resetScan();
+    return true;
+}
+
+bool upnpBegin(uint32_t now) {
+    // A flag left standing costs nothing: upnpBegin is the only reader, so
+    // a g_uRefind set on an edge whose next round settled on PCP or NAT-PMP
+    // just means the FIRST UPnP exchange after it re-discovers, which is
+    // what it should do anyway. It is not state that can be wrong, only
+    // state that can be early.
+    // Never on the way OUT. A CONFIG save that switches the setting off
+    // calls askNow too, which armed this, and consuming it here threw away
+    // the control URL the mapping was granted on: the DeletePortMapping
+    // then had to complete a whole fresh search and description fetch
+    // inside kUpnpMs before it could be sent, and on a 725 router that
+    // give-back is the only mitigation portmap.h offers for a mapping that
+    // never expires (the code review's second pass). A delete wants the
+    // URL the mapping was made on, never a newer one.
+    if (g_uRefind && g_uAct != A_DEL) {
+        // A sysop asked for this: PORTMAP NOW, or a CONFIG save. The
+        // permanent-lease fact goes with it, because the one thing NOW is
+        // reached for is a router whose menu, or whose box, has just
+        // changed. It costs one 725 round on a router that has not.
+        g_uRefind = false;
+        g_uPerm   = false;
+        upnpForget();
+    }
+    if (g_uCtl[0] && g_uHost) {
+        g_uStage = U_SOAP;
+        return openTcp(now);
+    }
+
+    g_uStage  = U_SEARCH;
+    g_uCtl[0] = '\0';                // nothing half-discovered can look found
+    g_noSock  = false;
+    g_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (g_fd < 0) { g_noSock = true; return false; }
+    const int fl = fcntl(g_fd, F_GETFL, 0);
+    fcntl(g_fd, F_SETFL, fl | O_NONBLOCK);
+    sockaddr_in me = {};
+    me.sin_family      = AF_INET;
+    me.sin_addr.s_addr = g_self;
+    // Said when it fails, because the comment above is then untrue: the
+    // search leaves by whatever interface the route picks, which on a board
+    // with a wire and a radio both may not be the one callers reach.
+    if (bind(g_fd, reinterpret_cast<sockaddr*>(&me), sizeof(me)) != 0)
+        plat::log("portmap: could not bind the UPnP search to this board's own "
+                  "address; it will leave by the default route");
+#ifndef BBS_HOST
+    // Which interface the group leaves by, and how far it may travel. UDA
+    // 1.1 says the TTL should default to 2; the router is on-link, so this
+    // is belt and braces either way. Both are best effort: a stack that
+    // refuses them still sends the unicast search.
+    // Guarded by name: lwIP defines these only with
+    // LWIP_MULTICAST_TX_OPTIONS, so a missing macro would be a build
+    // failure on an image that otherwise works, and a stack without them
+    // still sends to the group by its route.
+#ifdef IP_MULTICAST_IF
+    in_addr mif = {};
+    mif.s_addr = g_self;
+    setsockopt(g_fd, IPPROTO_IP, IP_MULTICAST_IF, &mif, sizeof(mif));
+#endif
+#ifdef IP_MULTICAST_TTL
+    const uint8_t ttl = 2;
+    setsockopt(g_fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+#endif
+#endif
+    resetScan();
+    sendSsdp(now);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// takeLocation: pull the description's host, port and path out of an SSDP
+// reply. False when there is nothing usable in it.
+//
+// SSDP carries HTTP's header grammar, so the name is matched without case.
+// A LOCATION whose host is a NAME is refused rather than resolved: that
+// would be DNS on the loop, and a router that cannot name itself by address
+// in its own SSDP reply is not one this will work with (portmap.h).
+// ---------------------------------------------------------------------------
+bool takeLocation(const char* reply) {
+    const char* p = reply;
+    const char* loc = nullptr;
+    for (; *p; ++p) {
+        if ((*p == 'l' || *p == 'L') && strncasecmp(p, "location:", 9) == 0) { loc = p + 9; break; }
+    }
+    if (!loc) return false;
+    while (*loc == ' ' || *loc == '\t') ++loc;
+    if (strncasecmp(loc, "http://", 7) != 0) return false;
+    loc += 7;
+
+    char host[48];
+    size_t h = 0;
+    while (*loc && *loc != ':' && *loc != '/' && *loc != '\r' && *loc != '\n' && *loc != ' ') {
+        if (h + 1 >= sizeof(host)) return false;
+        host[h++] = *loc++;
+    }
+    host[h] = '\0';
+    if (!h) return false;
+    const in_addr_t a = inet_addr(host);
+    if (a == INADDR_NONE) return false;
+    // And it must be the GATEWAY's address. This is the one place the
+    // "only the gateway's answer is read" guard does not carry itself: a
+    // PCP or NAT-PMP reply contains no address the board then goes and
+    // contacts, where an SSDP reply's LOCATION is a redirect. UDP source
+    // addresses spoof, so without this one datagram from anything on the
+    // LAN made the board fetch a stranger's description, take their control
+    // URL, believe their outside address, and publish their port to the
+    // directory as the one callers should dial (the code review, HIGH).
+    // A real IGD serves its description from the address it routes on.
+    if (a != static_cast<in_addr_t>(g_gw)) return false;
+
+    uint16_t port = 80;
+    if (*loc == ':') {
+        ++loc;
+        unsigned v = 0;
+        while (*loc >= '0' && *loc <= '9') { v = v * 10u + static_cast<unsigned>(*loc++ - '0'); if (v > 65535u) return false; }
+        if (!v) return false;
+        port = static_cast<uint16_t>(v);
+    }
+
+    size_t n = 0;
+    if (*loc != '/') { g_uPath[n++] = '/'; }
+    while (*loc && *loc != '\r' && *loc != '\n' && *loc != ' ') {
+        if (n + 1 >= sizeof(g_uPath)) return false;
+        g_uPath[n++] = *loc++;
+    }
+    g_uPath[n] = '\0';
+    if (!n) { g_uPath[0] = '/'; g_uPath[1] = '\0'; }
+    g_uHost = a;
+    g_uHttp = port;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// takeControl: the control URL the description gave, resolved against the
+// host LOCATION named.
+//
+// An absolute one moves the host and port with it, which is the only case
+// where a router's control service lives somewhere other than its
+// description. <URLBase> is not read: it is deprecated in UDA 1.1 because
+// so many devices filled it in wrongly, and a wrong base is worse than none
+// (portmap.h, Known limits).
+// ---------------------------------------------------------------------------
+bool takeControl() {
+    if (!g_uCtl[0]) return false;
+    if (strncasecmp(g_uCtl, "http://", 7) != 0) {
+        if (g_uCtl[0] != '/') {
+            // A relative path with no leading slash. Rare and legal; one
+            // slash in front of it is the resolution against "/".
+            //
+            // Refused rather than cut when the slash will not fit: a URL one
+            // character short draws a 404, which lands on refused(0) and
+            // reads as "your router said no" for an hour, where this gives
+            // serviceUpnp's accurate line instead (the code review's second
+            // pass).
+            if (strlen(g_uCtl) + 2 > sizeof(g_uCtl)) return false;
+            char tmp[sizeof(g_uCtl)];
+            snprintf(tmp, sizeof(tmp), "/%.*s", static_cast<int>(sizeof(tmp) - 2), g_uCtl);
+            memcpy(g_uCtl, tmp, strlen(tmp) + 1);
+        }
+        return true;
+    }
+    // Absolute: keep the path, and the port, but NOT a host that is not
+    // the gateway, for the reason takeLocation gives. A device description
+    // is a document from the network and an absolute URL in it is a
+    // redirect like any other.
+    const char* p = g_uCtl + 7;
+    char host[48];
+    size_t h = 0;
+    while (*p && *p != ':' && *p != '/') {
+        if (h + 1 >= sizeof(host)) return false;
+        host[h++] = *p++;
+    }
+    host[h] = '\0';
+    const in_addr_t a = inet_addr(host);
+    if (a == INADDR_NONE) return false;
+    if (a != static_cast<in_addr_t>(g_gw)) return false;
+    uint16_t port = 80;
+    if (*p == ':') {
+        ++p;
+        unsigned v = 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10u + static_cast<unsigned>(*p++ - '0'); if (v > 65535u) return false; }
+        if (!v) return false;
+        port = static_cast<uint16_t>(v);
+    }
+    char tmp[sizeof(g_uCtl)];
+    snprintf(tmp, sizeof(tmp), "%s", *p ? p : "/");
+    memcpy(g_uCtl, tmp, strlen(tmp) + 1);
+    g_uHost = a;
+    g_uHttp = port;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// feedDesc: one byte of the device description.
+//
+// The control URL is captured into g_uCtl whenever one goes past, and the
+// decision is made at </service>: if that element also carried a WAN
+// connection service type, the URL in hand belongs to it. That is what lets
+// one buffer serve both orderings (see the file comment).
+//
+// The one case this has to get right, and the reason the stand-in router's
+// description puts a Layer3Forwarding service with a controlURL of its OWN
+// in front of the WAN one: a scanner that kept the first controlURL it saw
+// would POST every action at the wrong service and the router would answer
+// perfectly sensible refusals to all of them.
+// ---------------------------------------------------------------------------
+void feedDesc(char c) {
+    if (g_uCap != C_NONE) {
+        if (c == '<') {
+            if (g_uCap == C_CTL) { g_uCtl[g_uCapLen] = '\0'; g_uCtlHit = g_uCapLen > 0; }
+            g_uCap = C_NONE;
+            // The '<' that ended the text still has to be offered to the
+            // matchers, or "</service>" right after a controlURL is missed.
+        } else if (g_uCap == C_CTL) {
+            // Printable and not a space. The capture is a document from the
+            // network and it goes straight into "POST %s HTTP/1.1\r\n", so
+            // one CR LF inside it would let the description's author add a
+            // second request of their own choosing, sent from the board's
+            // own trusted address (the code review, HIGH). A URL has no
+            // business holding any of these, so a byte outside the range
+            // voids the whole capture rather than cutting it short.
+            if (c < 0x21 || c > 0x7E) {
+                g_uCap    = C_NONE;
+                g_uCapLen = 0;
+                g_uCtlHit = false;
+                g_uCtlBad = true;
+                g_uCtl[0] = '\0';
+                return;
+            }
+            if (static_cast<size_t>(g_uCapLen) + 1 < sizeof(g_uCtl)) g_uCtl[g_uCapLen++] = c;
+            return;
+        } else if (g_uCap == C_VER) {
+            // The one digit after "WANxxConnection:". Anything else leaves
+            // the version at 1, which every IGD answers to.
+            if (c >= '1' && c <= '9') g_uVer = static_cast<uint8_t>(c - '0');
+            g_uCap = C_NONE;
+            return;
+        }
+    }
+
+    if (g_lSvcOpen.feed(c)) {
+        g_uInSvc  = true;
+        g_uSvcHit = false;
+        g_uCtlHit = false;
+        // Reset at both ends of a service element: g_lCtl is only fed while
+        // g_uInSvc, so a position left part way through "<controlURL>" by
+        // one element could otherwise be completed by text in the next
+        // (the code review, LOW).
+        g_lCtl.reset();
+        return;
+    }
+    if (g_lSvcShut.feed(c)) {
+        g_lCtl.reset();
+        if (g_uSvcHit && g_uCtlHit) { g_uDone = true; return; }
+        // Not the service wanted, so whatever URL was captured is somebody
+        // else's and must not be left looking like an answer.
+        g_uCtlHit  = false;
+        g_uCtl[0]  = '\0';
+        g_uInSvc   = false;
+        g_uSvcHit  = false;
+        return;
+    }
+    if (g_lWanIp.feed(c))  { g_uSvcHit = true; g_uSvc = S_IP;  g_uCap = C_VER; return; }
+    if (g_lWanPpp.feed(c)) { g_uSvcHit = true; g_uSvc = S_PPP; g_uCap = C_VER; return; }
+    // Only inside a <service>: g_uInSvc is what makes the "not followed"
+    // line in portmap.h's Known limits true rather than hopeful, and it is
+    // what keeps a device-level controlURL, if one ever appeared, from
+    // being handed to the SOAP stage as a WAN connection's.
+    if (g_uInSvc && g_lCtl.feed(c)) { g_uCap = C_CTL; g_uCapLen = 0; g_uCtlHit = false; return; }
+}
+
+// ---------------------------------------------------------------------------
+// feedSoap: one byte of a SOAP reply. What decides the answer is the body
+// and never the HTTP status, so that the two cannot disagree (file comment).
+// ---------------------------------------------------------------------------
+void feedSoap(char c) {
+    if (g_uCap != C_NONE) {
+        if (c == '<') {
+            // The kind is read BEFORE the capture is cleared: testing
+            // g_uCap after setting it to C_NONE is a condition that is
+            // always true, and it would have called every '<' after an
+            // address the end of the answer.
+            const uint8_t was = g_uCap;
+            g_uCap = C_NONE;
+            if (was == C_IP) {
+                g_uVal[g_uCapLen] = '\0';
+                // Done even when the element was EMPTY, which is a router
+                // whose own WAN link is down. extTook then reads it as "no
+                // address of its own" and asks again in a minute, where
+                // reading on to the far end's close instead would have
+                // landed on "the router answered something this board did
+                // not understand".
+                if (g_uAct == A_EXT) g_uDone = true;
+            }
+            // A fault code IS the answer, so the exchange ends here rather
+            // than at the close. Without this a reply whose connection
+            // stayed open past the budget turned a 725 ("ask for a
+            // permanent mapping") into "gave up", and the retry that code
+            // exists for never happened.
+            if (was == C_ERR && g_uCode) g_uDone = true;
+            // The '<' that ended the text still goes to the matchers below.
+        } else if (g_uCap == C_ERR) {
+            if (c >= '0' && c <= '9' && g_uCode < 6553u)
+                g_uCode = static_cast<uint16_t>(g_uCode * 10u + static_cast<uint16_t>(c - '0'));
+            return;
+        } else if (g_uCap == C_IP) {
+            if (static_cast<size_t>(g_uCapLen) + 1 < sizeof(g_uVal)) g_uVal[g_uCapLen++] = c;
+            return;
+        }
+    }
+    if (g_lErr.feed(c))   { g_uCap = C_ERR; g_uCode = 0; return; }
+    if (g_lExtIp.feed(c)) { g_uCap = C_IP;  g_uCapLen = 0; g_uVal[0] = '\0'; return; }
+    if (g_uAct == A_ADD && g_lAddOk.feed(c)) { g_uDone = true; return; }
+    if (g_uAct == A_DEL && g_lDelOk.feed(c)) { g_uDone = true; return; }
+}
+
+// ---------------------------------------------------------------------------
+// buildReq: the HTTP request for the stage this exchange is in, into caller
+// storage. Built fresh on every pass and sent from g_uSent, so a partial
+// send needs no buffer that outlives the pass: the same reason sendAsk
+// builds its datagram on the stack.
+//
+// The body goes in at kHdrRoom so its length is known before the headers
+// that must declare it are written, and is then moved back to meet them.
+// Returns 0 when it would not fit, which is a refusal rather than a cut
+// request: a SOAP body short of its closing tag is a fault the router would
+// answer with 402 and a sysop would read as "your router said no".
+//
+// 448 and not the 352 this shipped with for an afternoon, which was FOUR
+// bytes short of the longest header the capture allows. Counted literal by
+// literal: the POST line is 16 plus a control path of up to 95, HOST 29,
+// CONTENT-TYPE 42, CONTENT-LENGTH 21, SOAPACTION 17 plus a 47-character
+// service type plus 20, USER-AGENT 48 with this version string, CONNECTION
+// 19 and the blank line 2, which is 356. Past it buildReq returned 0 and
+// the sysop was told "your router does not do this" about a router that
+// does, with no console line naming the real cause (the code review).
+constexpr size_t kHdrRoom = 448;
+
+size_t buildReq(char* buf, size_t cap) {
+    char host[16];
+    addrText(g_uHost, host, sizeof(host));
+
+    if (g_uStage == U_DESC) {
+        const int n = snprintf(buf, cap,
+            "GET %s HTTP/1.1\r\n"
+            "HOST: %s:%u\r\n"
+            "USER-AGENT: unleashed/" BBS_VERSION " UPnP/1.0\r\n"
+            "CONNECTION: close\r\n"
+            "\r\n", g_uPath, host, static_cast<unsigned>(g_uHttp));
+        return (n > 0 && static_cast<size_t>(n) < cap) ? static_cast<size_t>(n) : 0;
+    }
+
+    char urn[80];
+    svcUrn(urn, sizeof(urn));
+    char* body = buf + kHdrRoom;
+    const size_t broom = cap - kHdrRoom;
+    int b = 0;
+    if (g_uAct == A_EXT) {
+        b = snprintf(body, broom,
+            "<?xml version=\"1.0\"?>"
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\""
+            " s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
+            "<u:GetExternalIPAddress xmlns:u=\"%s\"></u:GetExternalIPAddress>"
+            "</s:Body></s:Envelope>", urn);
+    } else if (g_uAct == A_DEL) {
+        b = snprintf(body, broom,
+            "<?xml version=\"1.0\"?>"
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\""
+            " s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
+            "<u:DeletePortMapping xmlns:u=\"%s\">"
+            "<NewRemoteHost></NewRemoteHost>"
+            "<NewExternalPort>%u</NewExternalPort>"
+            "<NewProtocol>TCP</NewProtocol>"
+            "</u:DeletePortMapping></s:Body></s:Envelope>",
+            urn, static_cast<unsigned>(g_uExt));
+    } else {
+        char me[16];
+        addrText(g_self, me, sizeof(me));
+        b = snprintf(body, broom,
+            "<?xml version=\"1.0\"?>"
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\""
+            " s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>"
+            "<u:AddPortMapping xmlns:u=\"%s\">"
+            "<NewRemoteHost></NewRemoteHost>"
+            "<NewExternalPort>%u</NewExternalPort>"
+            "<NewProtocol>TCP</NewProtocol>"
+            "<NewInternalPort>%u</NewInternalPort>"
+            "<NewInternalClient>%s</NewInternalClient>"
+            "<NewEnabled>1</NewEnabled>"
+            "<NewPortMappingDescription>%s</NewPortMappingDescription>"
+            "<NewLeaseDuration>%lu</NewLeaseDuration>"
+            "</u:AddPortMapping></s:Body></s:Envelope>",
+            urn, static_cast<unsigned>(g_uExt),
+            static_cast<unsigned>(g_slot[g_at].internal), me, kMapDesc,
+            static_cast<unsigned long>(g_uPerm ? 0u : kLifeSecs));
+    }
+    if (b <= 0 || static_cast<size_t>(b) >= broom) {
+        plat::log("portmap: the UPnP request for port %u does not fit; not sent",
+                  static_cast<unsigned>(g_slot[g_at].internal));
+        return 0;
+    }
+
+    const char* action = g_uAct == A_EXT ? "GetExternalIPAddress"
+                       : g_uAct == A_DEL ? "DeletePortMapping"
+                                         : "AddPortMapping";
+    const int h = snprintf(buf, kHdrRoom,
+        "POST %s HTTP/1.1\r\n"
+        "HOST: %s:%u\r\n"
+        "CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"
+        "CONTENT-LENGTH: %d\r\n"
+        "SOAPACTION: \"%s#%s\"\r\n"
+        "USER-AGENT: unleashed/" BBS_VERSION " UPnP/1.0\r\n"
+        "CONNECTION: close\r\n"
+        "\r\n", g_uCtl, host, static_cast<unsigned>(g_uHttp), b, urn, action);
+    if (h <= 0 || static_cast<size_t>(h) >= kHdrRoom) {
+        // Named, because the only other sign of it is the board reporting
+        // a working router as absent.
+        plat::log("portmap: the router's UPnP control address is too long for a "
+                  "request (%d bytes of headers)", h);
+        return 0;
+    }
+    memmove(buf + h, body, static_cast<size_t>(b));
+    return static_cast<size_t>(h) + static_cast<size_t>(b);
+}
+
+// ---------------------------------------------------------------------------
+// sendUpnpReq: whatever is left of the request. False while there is more
+// to go, true once the last byte is away.
+// ---------------------------------------------------------------------------
+bool sendUpnpReq(bool& bad) {
+    // 1,088, which is kHdrRoom (448) plus 640 for the body. Measured
+    // rather than guessed: the longest header is 355, so 93 spare, and the
+    // longest body is an AddPortMapping with a 47-character service type,
+    // 65535 for both ports, a 15-character address and the mapping's
+    // description, which is 600, so 39 spare after its terminator. This is
+    // the largest single buffer on this path, and it sits on the BBS task,
+    // whose low-water mark has been as little as 1,440 bytes in this
+    // project's history, so it is sized to what the arithmetic needs and
+    // not rounded up. **The frame is not the figure**: serviceUpnp's own
+    // char buf[768] and char buf[kUpnpChunk] are above it in the same call
+    // chain, so the worst case for Bbs::tick -> portmap::tick -> service ->
+    // serviceUpnp -> sendUpnpReq -> buildReq is nearer 2.2 KB. bbs.cpp's
+    // stackWatch("tail", ...) covers it, so the board reports it; this
+    // comment should not read as if 1,088 were the whole of it. If kMapDesc or BBS_VERSION ever grows past those 39 bytes,
+    // buildReq returns 0 and says so on the console rather than cutting a
+    // request, which is why 39 is a budget and not a hazard.
+    char req[1088];
+    static_assert(sizeof(req) - kHdrRoom >= 640, "no room for a SOAP body");
+    const size_t len = buildReq(req, sizeof(req));
+    if (!len) { bad = true; return false; }
+    while (g_uSent < len) {
+        const ssize_t n = send(g_fd, req + g_uSent, len - g_uSent, 0);
+        if (n > 0) { g_uSent = static_cast<uint16_t>(g_uSent + n); continue; }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return false;
+        bad = true;
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -473,8 +1397,57 @@ void sendAsk(uint32_t now) {
 // than to hide: CONFIG_LWIP_MAX_SOCKETS is 16, IDF 5.3.1 caps it there on
 // every chip, and the board already oversubscribes it (portmap.h).
 // ---------------------------------------------------------------------------
+// Declared here because begin's UPnP arm has to be able to abandon an
+// exchange it could not even open, and giveUp is where that is said. The
+// two call each other, bounded: giveUp only ever calls begin for the NEXT
+// protocol in the chain, and the last of the three (UPnP) matches neither
+// chain condition, so the nesting cannot go past two.
+void giveUp(uint32_t now);
+
 bool begin(uint8_t i, uint8_t ask, bool addrAsk, bool del, uint32_t now) {
     closeFd();
+    g_at      = i;
+    g_ask     = ask;
+    g_addrAsk = addrAsk;
+    g_delete  = del;
+    g_tries   = 0;
+    g_force   = false;                   // PORTMAP NOW is spent on this ask
+    g_began   = now;
+
+    if (ask == kAskUpnp) {
+        // UPnP owns its own sockets, because the stage decides whether it
+        // wants UDP or TCP, and the action decides which of the three it
+        // is asking. The counters and the wait are the same for all three
+        // protocols, so they stay here.
+        g_uAct = del ? A_DEL : addrAsk ? A_EXT : A_ADD;
+        // Which outside port this exchange is about. A refresh keeps the
+        // number callers have been given; a first ask takes the internal
+        // one, moved up by however many 718 conflicts have been met.
+        Slot& s = g_slot[i];
+        g_uExt = s.external ? s.external
+                            : static_cast<uint16_t>(s.internal + s.clash);
+        ++g_asked;
+        if (!upnpBegin(now)) {
+            closeFd();
+            // Which of the two it was matters: a socket() that failed is
+            // the board's own budget and the discovery is still good,
+            // where a connect() that failed outright is a control service
+            // that has gone and must be looked for again. Reporting both
+            // as NoSocket had a board retrying a dead control URL every
+            // minute while blaming itself (the code review, LOW).
+            if (g_noSock) {
+                g_why = Why::NoSocket;
+                waitFor(now, kSoonMs);
+                plat::log("portmap: no socket free to ask the router; "
+                          "trying again in a minute");
+            } else {
+                giveUp(now);
+            }
+            return false;
+        }
+        return true;
+    }
+
     g_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_fd < 0) {
         g_why = Why::NoSocket;
@@ -484,12 +1457,6 @@ bool begin(uint8_t i, uint8_t ask, bool addrAsk, bool del, uint32_t now) {
     }
     const int fl = fcntl(g_fd, F_GETFL, 0);
     fcntl(g_fd, F_SETFL, fl | O_NONBLOCK);
-    g_at      = i;
-    g_ask     = ask;
-    g_addrAsk = addrAsk;
-    g_delete  = del;
-    g_tries   = 0;
-    g_force   = false;                   // PORTMAP NOW is spent on this ask
     ++g_asked;
     sendAsk(now);
     return true;
@@ -501,6 +1468,14 @@ void giveUp(uint32_t now) {
     closeFd();
     ++g_failed;
     const bool del = g_delete;
+    // Read BEFORE the reset below, because the reset is what used to make
+    // the console line print once an HOUR instead of once: Proto::None is
+    // the latch that silences it, and setting Unknown at the top of every
+    // round undid the latch every round (the code review's second pass).
+    // It also stopped the line being true: a buildReq that refused a
+    // too-long control URL reaches here on a router that answered UPnP
+    // perfectly well.
+    const bool wasUnknown = g_proto == Proto::Unknown;
     // PCP said nothing. A gateway that speaks only NAT-PMP should have
     // answered UNSUPP_VERSION, but plenty of them simply drop a version
     // they do not know, so NAT-PMP is asked anyway.
@@ -513,15 +1488,43 @@ void giveUp(uint32_t now) {
     // says is the likely one: a sysop with a NAT-PMP-only router who
     // switched UPnP on after the board gave up was never found again (the
     // third review pass).
-    if (g_proto != Proto::Pcp && g_proto != Proto::Pmp && g_ask == kAskPcp) {
+    // A UPnP exchange that got nowhere throws its discovery away, so the
+    // next round searches again: the three failures it covers are a search
+    // nobody answered (nothing to forget), a description that would not
+    // fetch, and a control URL that has stopped working, and only the last
+    // is ambiguous. A REFUSAL does not come through here (refused does), so
+    // a 718 or a 725 never costs a re-discovery.
+    if (g_ask == kAskUpnp) upnpForget();
+    // Nothing is held, so there is nothing to lose by asking the whole
+    // question again from the top, and the recovery this file documents
+    // depends on it: a board settled on NAT-PMP whose router is swapped for
+    // a UPnP-only one kept asking NAT-PMP for ever, said "your router does
+    // not do this", and could only be recovered by switching the setting
+    // off and on, which nothing told the sysop (the code review, MEDIUM).
+    // It is the same shape as the bug the comment below describes, one case
+    // further out. A HELD mapping whose renewal missed one datagram does
+    // not come through here, so the common case is untouched.
+    if (!anyHeld()) g_proto = Proto::Unknown;
+    const bool settled = g_proto == Proto::Pcp || g_proto == Proto::Pmp ||
+                         g_proto == Proto::Upnp;
+    if (!settled && g_ask == kAskPcp) {
         begin(g_at, kAskPmp, false, del, now);
+        return;
+    }
+    // And then UPnP, which is the one most routers have. The two before it
+    // are a datagram each, so reaching this costs about 1.75 seconds and no
+    // caller notices either way.
+    if (!settled && g_ask == kAskPmp) {
+        begin(g_at, kAskUpnp, false, del, now);
         return;
     }
     if (g_proto == Proto::Unknown) {
         g_proto = Proto::None;
         g_why   = Why::NoAnswer;
-        plat::log("portmap: the router answered neither PCP nor NAT-PMP on port %u; "
-                  "nothing is forwarded", static_cast<unsigned>(gatewayPort()));
+        if (wasUnknown)
+            plat::log("portmap: the router answered no PCP or NAT-PMP on port %u and no "
+                      "UPnP on port %u; nothing is forwarded",
+                      static_cast<unsigned>(gatewayPort()), static_cast<unsigned>(ssdpPort()));
     } else if (!anyHeld()) {
         g_why = Why::NoAnswer;
     }
@@ -533,7 +1536,7 @@ void giveUp(uint32_t now) {
 // say the one line a sysop reads off the console. False when the gateway
 // said yes and gave nothing, which the caller must not treat as a mapping.
 // ---------------------------------------------------------------------------
-bool granted(uint16_t ext, uint32_t life, uint32_t now) {
+bool granted(uint16_t ext, uint32_t life, uint32_t now, bool perm = false) {
     Slot& s = g_slot[g_at];
     // A gateway may grant less than was asked for, and zero means it granted
     // nothing at all whatever its result code said.
@@ -553,10 +1556,20 @@ bool granted(uint16_t ext, uint32_t life, uint32_t now) {
     s.lifeSecs  = life;
     s.grantedAt = now;
     s.flags |= F_HELD;
+    // A UPnP router that would only make a permanent mapping. lifeSecs is
+    // still kLifeSecs so the half-life re-assert below works unchanged,
+    // which is also the only thing that notices a UPnP router's reboot, but
+    // the flag stops lapse() calling it expired and stops every surface
+    // printing a lease that is not one.
+    if (perm) s.flags |= F_PERM;
+    else      s.flags &= static_cast<uint8_t>(~F_PERM);
+    // Whatever number was settled on is the one to refresh, so the 718
+    // walk starts from the board's own number again next time it is needed.
+    s.clash = 0;
     // The refusal throttle forgets on a success, or a refusal that comes
     // back after a spell of working would be silent for ever (third review).
     g_loggedWhy  = Why::Ok;
-    g_loggedCode = 0xFF;
+    g_loggedCode = 0xFFFF;
     // Granted after the setting went off: the edge handler in tick() has
     // already run for this pass, so only this can arm the give-back for a
     // mapping the gateway handed over on its way out. Once, with no re-arm,
@@ -577,17 +1590,20 @@ bool granted(uint16_t ext, uint32_t life, uint32_t now) {
         const uint8_t* b = reinterpret_cast<const uint8_t*>(&g_ext);
         snprintf(addr, sizeof(addr), "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
     }
-    plat::log("portmap: %s mapped port %u to %s:%u for %lu s%s",
-              g_proto == Proto::Pcp ? "PCP" : "NAT-PMP",
-              static_cast<unsigned>(s.internal), addr, static_cast<unsigned>(ext),
-              static_cast<unsigned long>(life),
+    char life_[24];
+    if (perm) snprintf(life_, sizeof(life_), "permanently");
+    else      snprintf(life_, sizeof(life_), "for %lu s", static_cast<unsigned long>(life));
+    plat::log("portmap: %s mapped port %u to %s:%u %s%s",
+              g_proto == Proto::Pcp  ? "PCP"
+            : g_proto == Proto::Upnp ? "UPnP" : "NAT-PMP",
+              static_cast<unsigned>(s.internal), addr, static_cast<unsigned>(ext), life_,
               g_why == Why::Carrier ? "; that address is NOT on the internet" : "");
     return true;
 }
 
 // resultWhy: a protocol's own refusal in this module's words. The two
 // codings differ, so each is read against its own RFC.
-Why resultWhy(uint8_t code) {
+Why resultWhy(uint16_t code) {
     if (g_ask == kAskPcp) {                     // RFC 6887 section 7.4
         switch (code) {
             case 2:  return Why::Refused;             // NOT_AUTHORIZED
@@ -606,6 +1622,20 @@ Why resultWhy(uint8_t code) {
             default: return Why::Refused;
         }
     }
+    if (g_ask == kAskUpnp) {                    // the IGD service template
+        switch (code) {
+            // ConflictWithOtherMechanisms: the router has a static forward,
+            // or another protocol's mapping, on this number. It can clear
+            // by itself, so it is asked again in a minute rather than in an
+            // hour.
+            case 729: return Why::GatewayBusy;
+            // Everything else from an IGD is a flat no: 402 invalid args,
+            // 501 action failed, 606 not authorised, 715 and 716 wildcards,
+            // 718 after the alternatives ran out, 724 same ports required,
+            // 726 and 727 wildcard-only. None of them clears by waiting.
+            default:  return Why::Refused;
+        }
+    }
     switch (code) {                             // RFC 6886 section 3.5
         case 2:  return Why::Refused;                 // the user turned the feature off
         case 3:                                       // the box has no lease of its own
@@ -615,7 +1645,7 @@ Why resultWhy(uint8_t code) {
 }
 
 // refused: the gateway answered and the answer was no.
-void refused(uint8_t code, uint32_t now, const char* which) {
+void refused(uint16_t code, uint32_t now, const char* which) {
     g_why  = resultWhy(code);
     g_code = code;
     ++g_failed;
@@ -639,12 +1669,281 @@ void refused(uint8_t code, uint32_t now, const char* which) {
 }
 
 // ---------------------------------------------------------------------------
+// extTook: the outside address an answer carried, judged. Shared by
+// NAT-PMP's public-address reply and UPnP's GetExternalIPAddress, because
+// the judgement is the valuable half of this feature and two copies of it
+// would be two chances to differ.
+//
+// A zero address is a router with no WAN lease of its own, which is a
+// mapping onto nothing: said, and asked again in a minute rather than
+// treated as settled, because a router still waiting on its own lease will
+// have one shortly. g_extAsked is deliberately left false there.
+// ---------------------------------------------------------------------------
+void extTook(uint32_t addr, uint32_t now) {
+    g_ext = addr;
+    if (!g_ext) {
+        g_why = Why::GatewayBusy;
+        waitFor(now, kSoonMs);
+        return;
+    }
+    g_extAsked = true;
+    if (anyHeld()) {
+        g_why = privateAddr(g_ext) ? Why::Carrier : Why::Ok;
+        // On NAT-PMP and on UPnP the mapping is granted BEFORE the address
+        // is known, so granted()'s own line cannot carry the verdict; the
+        // console is the screen a sysop reads to diagnose this.
+        if (g_why == Why::Carrier) {
+            char a[16];
+            addrText(g_ext, a, sizeof(a));
+            plat::log("portmap: the router's outside address is %s, which is NOT on "
+                      "the internet: callers cannot reach it", a);
+        }
+    }
+    waitFor(now, 0);
+}
+
+// ---------------------------------------------------------------------------
+// upnpAnswer: a SOAP reply has been read to the end, or the router closed
+// the connection. g_uCode is its fault code, 0 for none, and g_uDone says
+// whether the answer this exchange asked for was actually in it.
+//
+// Three codes mean something other than "no", and each is answered by
+// asking again rather than by reporting a failure:
+//   714  a delete of a mapping that is not there: the delete is done
+//   725  this firmware only makes permanent mappings: ask for one
+//   718  this outside number belongs to another host: try the next
+// ---------------------------------------------------------------------------
+void upnpAnswer(uint32_t now) {
+    closeFd();
+    Slot& s = g_slot[g_at];
+    g_proto = Proto::Upnp;
+    // When the router last ANSWERED, as the other two protocols record it.
+    g_asOf  = clk::epoch();
+
+    if (g_uCode) {
+        if (g_uAct == A_DEL && g_uCode == 714) {
+            s.flags &= static_cast<uint8_t>(~(F_HELD | F_PERM));
+            s.external = 0;
+            waitFor(now, 0);
+            return;
+        }
+        if (g_uAct == A_ADD && g_uCode == 725 && !g_uPerm) {
+            g_uPerm = true;
+            plat::log("portmap: UPnP will only make a mapping that never expires; "
+                      "asking for one");
+            waitFor(now, 0);
+            return;
+        }
+        if (g_uAct == A_ADD && g_uCode == 718) {
+            if (s.external) {
+                // The number callers have been given now belongs to another
+                // host on the LAN. Nothing is held, whatever the board
+                // believed, and the walk starts at its own number again.
+                s.flags &= static_cast<uint8_t>(~(F_HELD | F_PERM));
+                s.external = 0;
+                s.clash    = 0;
+                ++g_failed;
+                waitFor(now, 0);
+                return;
+            }
+            if (s.clash + 1 < kClashTries) {
+                ++s.clash;
+                ++g_failed;
+                plat::log("portmap: UPnP says outside port %u is taken; trying %u",
+                          static_cast<unsigned>(g_uExt),
+                          static_cast<unsigned>(s.internal + s.clash));
+                waitFor(now, 0);
+                return;
+            }
+            // Out of numbers to try. Reset the walk so the hourly round
+            // starts at the board's own number, in case the conflict has
+            // gone by then; without that a board sat on internal + 2 for
+            // the rest of its uptime.
+            s.clash = 0;
+        }
+        refused(g_uCode, now, "UPnP");
+        return;
+    }
+
+    if (!g_uDone) {
+        // The router answered and what came back was not the answer asked
+        // for: a 404, an authentication challenge, a body cut short. A
+        // refusal with no code of its own, said as one.
+        //
+        // And the discovery goes, which giveUp's own comment claimed to
+        // cover and did not: a control service MOVED by a firmware update
+        // lands here and not there, so the board POSTed at the old path
+        // every hour for the rest of its uptime (the code review, MEDIUM).
+        // It costs one search and one GET an hour, because Why::Refused
+        // already waits kRetryMs.
+        upnpForget();
+        refused(0, now, "UPnP");
+        return;
+    }
+
+    if (g_uAct == A_EXT) {
+        const in_addr_t a = inet_addr(g_uVal);
+        extTook(a == INADDR_NONE ? 0u : static_cast<uint32_t>(a), now);
+        return;
+    }
+    if (g_uAct == A_DEL) {
+        s.flags &= static_cast<uint8_t>(~(F_HELD | F_PERM));
+        s.external = 0;
+        waitFor(now, 0);
+        return;
+    }
+    // AddPortMapping answers no values at all, so the outside port of a
+    // granted mapping is the one that was asked for. IGD2's
+    // AddAnyPortMapping does return one and is not used (portmap.h).
+    if (granted(g_uExt, kLifeSecs, now, g_uPerm)) waitFor(now, 0);
+    else                                          waitFor(now, kRetryMs);
+}
+
+// ---------------------------------------------------------------------------
+// serviceUpnp: one step of a UPnP exchange. At most kUpnpReads x kUpnpChunk
+// bytes are read and scanned in a pass, which keeps the pass inside the
+// 100 us line however big the router's description is, and the whole
+// exchange is abandoned after kUpnpMs exactly as a silent UDP one is.
+// ---------------------------------------------------------------------------
+void serviceUpnp(uint32_t now) {
+    const bool late = plat::since(now, g_began) >= kUpnpMs;
+
+    if (g_uStage == U_SEARCH) {
+        char buf[768];
+        // Bounded, unlike a search that read until the socket was empty:
+        // SSDP is a LAN protocol and anything on the wire can put datagrams
+        // in this socket, including with the gateway's address on them, so
+        // an unbounded loop is a pass whose length somebody else chooses
+        // (Rule no. 1). Eight is more answers than a search can honestly
+        // produce from one router.
+        for (uint8_t seen = 0; seen < 8; ++seen) {
+            sockaddr_in from = {};
+            socklen_t   flen = sizeof(from);
+            const ssize_t n = recvfrom(g_fd, buf, sizeof(buf) - 1, 0,
+                                       reinterpret_cast<sockaddr*>(&from), &flen);
+            if (n <= 0) break;
+            // Only the gateway's own answer is read, which is what makes a
+            // search for upnp:rootdevice safe on a LAN full of televisions
+            // (the file comment). It is also the guard the UDP protocols
+            // use, for the same reason: a stranger must not be able to
+            // hand the board a description to go and fetch.
+            if (from.sin_addr.s_addr != g_gw) continue;
+            buf[n] = '\0';
+            if (!takeLocation(buf)) continue;
+            g_uStage = U_DESC;
+            if (!openTcp(now)) { giveUp(now); return; }
+            return;
+        }
+        if (late) { giveUp(now); return; }
+        // Keep listening for the whole budget, and resend up to kTries
+        // times on the way: a device may wait out MX before answering, so
+        // giving up with the sends is giving up too early.
+        const uint32_t gap = kFirstMs << (g_tries ? g_tries - 1 : 0);
+        if (g_tries < kTries && plat::since(now, g_sentAt) >= gap) sendSsdp(now);
+        return;
+    }
+
+    if (g_uPhase == P_CONN) {
+        fd_set w;
+        FD_ZERO(&w);
+        FD_SET(g_fd, &w);
+        timeval tv = {0, 0};
+        if (select(g_fd + 1, nullptr, &w, nullptr, &tv) <= 0) {
+            if (late) giveUp(now);
+            return;
+        }
+        // A socket still connecting reports SO_ERROR 0, the same as one that
+        // has finished, so writability is the test and this only means
+        // anything after it (announce's own lesson, which cost a round
+        // there: the other way works on loopback and fails on a LAN).
+        int       err = 0;
+        socklen_t el  = sizeof(err);
+        if (getsockopt(g_fd, SOL_SOCKET, SO_ERROR, &err, &el) < 0 || err) {
+            giveUp(now);
+            return;
+        }
+        g_uPhase = P_SEND;
+    }
+
+    if (g_uPhase == P_SEND) {
+        bool bad = false;
+        if (!sendUpnpReq(bad)) {
+            if (bad || late) giveUp(now);
+            return;
+        }
+        g_uPhase = P_READ;
+    }
+
+    bool eof = false;
+    char buf[kUpnpChunk];
+    for (uint8_t k = 0; k < kUpnpReads && !g_uDone; ++k) {
+        const ssize_t n = recv(g_fd, buf, sizeof(buf), 0);
+        if (n > 0) {
+            g_uRead += static_cast<uint32_t>(n);
+            for (ssize_t j = 0; j < n && !g_uDone; ++j) {
+                if (g_uStage == U_DESC) feedDesc(buf[j]);
+                else                    feedSoap(buf[j]);
+            }
+            if (g_uRead >= kUpnpMaxXml) break;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        eof = true;                       // the router closed, or an error
+        break;
+    }
+
+    if (g_uStage == U_DESC) {
+        if (g_uDone) {
+            if (!takeControl()) {
+                plat::log("portmap: the router's UPnP description named a control address "
+                          "this board cannot use");
+                giveUp(now);
+                return;
+            }
+            plat::log("portmap: UPnP found WAN%sConnection:%u at port %u",
+                      g_uSvc == S_PPP ? "PPP" : "IP",
+                      static_cast<unsigned>(g_uVer), static_cast<unsigned>(g_uHttp));
+            g_uStage = U_SOAP;
+            if (!openTcp(now)) { giveUp(now); return; }
+            return;
+        }
+        if (eof) {
+            plat::log(g_uCtlBad
+                ? "portmap: the router's UPnP description gave a control address this "
+                  "board will not use"
+                : "portmap: the router answered UPnP but its description has no "
+                  "port-forwarding service");
+            giveUp(now);
+            return;
+        }
+        if (g_uRead >= kUpnpMaxXml) {
+            plat::log("portmap: the router's UPnP description ran past %lu bytes; giving up",
+                      static_cast<unsigned long>(kUpnpMaxXml));
+            giveUp(now);
+            return;
+        }
+        if (late) giveUp(now);
+        return;
+    }
+
+    if (g_uDone || eof) { upnpAnswer(now); return; }
+    if (g_uRead >= kUpnpMaxXml) { giveUp(now); return; }
+    if (late) giveUp(now);
+}
+
+// ---------------------------------------------------------------------------
 // service: one step of an exchange in flight. Reads whatever is there,
 // retransmits when the gap has passed, gives up after kTries.
 // ---------------------------------------------------------------------------
 void service(uint32_t now) {
+    if (g_ask == kAskUpnp) { serviceUpnp(now); return; }
     uint8_t pkt[64];
-    for (;;) {
+    // Bounded for the reason serviceUpnp's search loop is (the code
+    // review's second pass caught that one of the two was left): this is an
+    // unbound UDP socket, so anything that finds its ephemeral port inside
+    // the 1.75 s exchange can spray it, and each datagram costs a recvfrom
+    // on the loop. One reply is all either protocol sends.
+    for (uint8_t seen = 0; seen < 8; ++seen) {
         sockaddr_in from = {};
         socklen_t   flen = sizeof(from);
         const ssize_t n = recvfrom(g_fd, pkt, sizeof(pkt), 0,
@@ -746,7 +2045,7 @@ void service(uint32_t now) {
         // reply for another port is not this exchange's (see the PCP note).
         if (mapReply && get16(pkt + 8) != g_slot[g_at].internal) continue;
         const uint16_t code = get16(pkt + 2);
-        g_code  = static_cast<uint8_t>(code > 255 ? 255 : code);
+        g_code  = code;
         g_proto = Proto::Pmp;
         g_asOf  = clk::epoch();
         const uint32_t epoch = get32(pkt + 4);
@@ -756,38 +2055,20 @@ void service(uint32_t now) {
         closeFd();
         if (code != 0) { refused(g_code, now, "NAT-PMP"); return; }
         if (addrReply) {
-            memcpy(&g_ext, pkt + 8, 4);
-            if (!g_ext) {
-                // The router answered and has no outside address of its own,
-                // which is a mapping onto nothing. Said rather than asked
-                // again every pass (the first review), and g_extAsked is
-                // LEFT false so it is asked again in a minute: a router
-                // still waiting on its own WAN lease will have one shortly,
-                // and that is not a settled answer. Safe only because a due
-                // mapping is picked before this question (see tick): asking
-                // above due() would starve the renewal for ever.
-                g_why = Why::GatewayBusy;
-                waitFor(now, kSoonMs);
-                return;
-            }
-            g_extAsked = true;
-            if (anyHeld()) {
-                g_why = privateAddr(g_ext) ? Why::Carrier : Why::Ok;
-                // Said on the console here as well as on PORTMAP and SYS.
-                // On NAT-PMP the mapping is granted BEFORE the address is
-                // known, so granted()'s own line cannot carry the verdict,
-                // and without this the carrier finding reached every screen
-                // except the one a sysop reads over the serial port — on
-                // the protocol where it matters most (found by the host
-                // test, not by the code reviews).
-                if (g_why == Why::Carrier) {
-                    char a[16];
-                    addrText(g_ext, a, sizeof(a));
-                    plat::log("portmap: the router's outside address is %s, which is NOT on "
-                              "the internet: callers cannot reach it", a);
-                }
-            }
-            waitFor(now, 0);
+            // Judged by extTook, which UPnP's GetExternalIPAddress shares:
+            // a zero address is a router with no lease of its own and is
+            // asked again in a minute rather than settled, and the carrier
+            // verdict is said on the console as well as on PORTMAP and
+            // SYS. On NAT-PMP, as on UPnP, the mapping is granted BEFORE
+            // the address is known, so granted()'s own line cannot carry
+            // that verdict (found by the host test, not by a review).
+            //
+            // Safe only because a due mapping is picked before this
+            // question (see tick): asking above due() would starve the
+            // renewal for ever.
+            uint32_t a = 0;
+            memcpy(&a, pkt + 8, 4);
+            extTook(a, now);
             return;
         }
         if (g_delete) {
@@ -833,6 +2114,17 @@ void tick(uint32_t now, uint16_t telnetPort, uint16_t sshPort) {
             g_mapTried = false;
             g_epoch    = 0;
             g_epochAt  = 0;
+            // The UPnP discovery goes too, and so does the knowledge that
+            // the router only makes permanent mappings: a sysop who has
+            // just switched this on may have changed the router as well,
+            // and that fact belongs to the old one. drop() does not clear
+            // g_uPerm, deliberately, because there it IS the same router.
+            //
+            // Through the flag and not at once: an off-then-on inside one
+            // second can leave a release exchange in flight, and this used
+            // to rebuild that request from cleared state (see g_uRefind).
+            g_uRefind  = true;
+            g_relTried = 0;
             waitFor(now, 0);
             plat::log("portmap: asking the router to forward the board's ports");
         } else if (anyHeld()) {
@@ -848,7 +2140,8 @@ void tick(uint32_t now, uint16_t telnetPort, uint16_t sshPort) {
             // feature switched off (the code review's second pass). The
             // in-flight grant is caught in granted() instead, where it
             // cannot loop.
-            g_release = kSlots;
+            g_release  = kSlots;
+            g_relTried = 0;
             plat::log("portmap: off; giving back what the router granted");
         } else {
             plat::log("portmap: off");
@@ -858,15 +2151,17 @@ void tick(uint32_t now, uint16_t telnetPort, uint16_t sshPort) {
     if (g_fd >= 0) { service(now); return; }     // an exchange in flight comes first
 
     if (!on) {
-        if (g_release && anyHeld() && (g_proto == Proto::Pcp || g_proto == Proto::Pmp)) {
+        if (g_release && anyHeld() && g_proto != Proto::Unknown && g_proto != Proto::None) {
             for (uint8_t i = 0; i < kSlots; ++i) {
                 if (!(g_slot[i].flags & F_HELD)) continue;
+                if (g_relTried & (1u << i)) continue;
+                g_relTried = static_cast<uint8_t>(g_relTried | (1u << i));
                 --g_release;
-                begin(i, g_proto == Proto::Pcp ? kAskPcp : kAskPmp, false, true, now);
+                begin(i, askOf(g_proto), false, true, now);
                 return;
             }
         }
-        if (g_release || anyHeld()) { g_release = 0; drop(); }
+        if (g_release || anyHeld()) { g_release = 0; g_relTried = 0; drop(); }
         g_why    = Why::Off;
         g_delete = false;
         return;
@@ -935,7 +2230,9 @@ void tick(uint32_t now, uint16_t telnetPort, uint16_t sshPort) {
     // So: whichever was not asked last. g_mapTried is a hint and not state
     // that can be wrong; a stale one costs one extra address request.
     const uint8_t i = due(now);
-    const bool wantAddr = g_proto == Proto::Pmp && !g_extAsked;
+    // NAT-PMP and UPnP both answer the outside address in a question of
+    // their own; PCP's map reply carries it, so there it is free.
+    const bool wantAddr = (g_proto == Proto::Pmp || g_proto == Proto::Upnp) && !g_extAsked;
     // g_extAsked is set where the question is ANSWERED, not here: setting it
     // on the attempt meant one lost datagram, one refusal or one failed
     // socket() left the address never asked again for the life of the
@@ -944,12 +2241,20 @@ void tick(uint32_t now, uint16_t telnetPort, uint16_t sshPort) {
     // slot-independent, so slot 0 asks.
     if (wantAddr && (i == 0xFF || g_mapTried)) {
         g_mapTried = false;
-        begin(0, kAskPmp, true, false, now);
+        begin(0, askOf(g_proto), true, false, now);
         return;
     }
     if (i != 0xFF) {
         g_mapTried = true;
-        begin(i, g_proto == Proto::Pmp ? kAskPmp : kAskPcp, false, false, now);
+        // **Nothing held means the question is asked from the top.** A
+        // renewal goes to the protocol that granted the mapping, because
+        // that is the one that will renew it; a round with nothing held
+        // starts at PCP and walks all three, which costs two datagrams and
+        // buys two things: a router swapped for one that speaks something
+        // else is found in ONE round rather than over two, and giveUp's
+        // "no PCP, no NAT-PMP, no UPnP" line is then true of the round it
+        // is printed about rather than of a round that only tried one.
+        begin(i, anyHeld() ? askOf(g_proto) : kAskPcp, false, false, now);
         return;
     }
     {
@@ -992,7 +2297,17 @@ void askNow() {
     // address, which is precisely the case it exists for (the review's
     // second pass). PCP's refresh carries the address, so this is free there.
     g_extAsked = false;
-    if (g_proto == Proto::None) g_proto = Proto::Unknown;   // ask the question again
+    // And on a UPnP router the description is read again, because the one
+    // thing NOW is reached for is a router whose menu has just been changed
+    // and whose control service may have come or gone with it. One search
+    // and one GET, once, on a command a sysop typed. Armed rather than done
+    // here: this runs on the shell's pass, which is above the in-flight
+    // guard (see g_uRefind).
+    if (g_proto == Proto::Upnp) g_uRefind = true;
+    // Ask the whole question again whenever there is nothing to lose by it.
+    // "None" alone was not enough: a board settled on one protocol and
+    // holding nothing never tried the other two (the code review, MEDIUM).
+    if (g_proto == Proto::None || !anyHeld()) g_proto = Proto::Unknown;
 }
 
 Status status() {
@@ -1013,15 +2328,27 @@ Status status() {
     st.sshPort  = (g_slot[1].flags & F_HELD) ? g_slot[1].external : 0;
 #endif
     const uint32_t now = plat::millis();
+    // "Nothing recorded yet" is its own flag and not left == 0, because 0
+    // is also a real remainder: a mapping whose lease has just run out and
+    // which lapse() has not yet cleared would otherwise be overwritten by
+    // the other slot's figure, and the row would print an hour left over a
+    // mapping that has none (the code review, LOW).
+    bool     have = false;
     uint32_t left = 0;
     for (uint8_t i = 0; i < kSlots; ++i) {
         const Slot& s = g_slot[i];
         if (!(s.flags & F_HELD)) continue;
+        if (s.flags & F_PERM) { st.permanent = true; continue; }
         const uint32_t gone = plat::since(now, s.grantedAt) / 1000u;
         const uint32_t rem  = s.lifeSecs > gone ? s.lifeSecs - gone : 0;
-        if (!left || rem < left) left = rem;
+        if (!have || rem < left) { left = rem; have = true; }
     }
-    st.leftSecs = left;
+    // A board holding one permanent mapping and one leased one has a lease
+    // to show, so permanent is reported only when there is no lease left to
+    // report: every surface then reads "permanent" rather than a figure
+    // that is true of only half of what is held.
+    st.leftSecs  = have ? left : 0;
+    st.permanent = st.permanent && !have;
     return st;
 }
 
@@ -1037,7 +2364,13 @@ const char* whyText(const Status& st) {
         case Why::Ok:          return "mapped by your router";
         case Why::Off:         return "off: yes asks your router to forward it";
         case Why::NoNetwork:   return "no network address yet";
-        case Why::NoAnswer:    return "your router does not do this, or it is off";
+        // Three limbs, not two, and the third was learned from a real
+        // router: a MikroTik with NAT-PMP switched ON and no interfaces
+        // declared answers nothing, which looks from here exactly like a
+        // router that has never had the feature. "Not set up" is the honest
+        // middle ground between "off" and "does not have it", and all three
+        // want different things of a sysop (whatToDo says which).
+        case Why::NoAnswer:    return "no answer: off, not set up, or does not have it";
         case Why::Refused:     return "your router said no";
         case Why::GatewayBusy: return "your router has no address of its own";
         case Why::Carrier:     return "mapped, but that address is your carrier's";
@@ -1057,8 +2390,12 @@ const char* whyText(const Status& st) {
 const char* whatToDo(const Status& st) {
     switch (st.why) {
         case Why::NoAnswer:
-            return "Look for UPnP or NAT-PMP in your router's menu. Some routers have "
-                   "neither, and then the port has to be forwarded by hand.";
+            return "Look for UPnP or NAT-PMP in your router's menu. Switched on is not "
+                   "always enough: some routers also want to be told which of their "
+                   "own connections is the outside one, and until they are they answer "
+                   "nothing at all, which looks from here exactly like a router that "
+                   "cannot do it. And some cannot, in which case the port has to be "
+                   "forwarded by hand.";
         case Why::Refused:
             return "The router understood and said no, which usually means the feature is "
                    "switched off in its menu. Look for UPnP or NAT-PMP there.";
@@ -1089,7 +2426,7 @@ const char* whyShort(const Status& st) {
         case Why::Ok:          return "mapped";
         case Why::Off:         return "off";
         case Why::NoNetwork:   return "no address yet";
-        case Why::NoAnswer:    return "router will not";
+        case Why::NoAnswer:    return "no answer";
         case Why::Refused:     return "router said no";
         case Why::GatewayBusy: return "router busy";
         case Why::Carrier:     return "carrier address";
@@ -1121,11 +2458,34 @@ void line(char* out, size_t n, bool wide) {
     if (!st.on) { snprintf(out, n, "%s", wide ? whyText(st) : "off"); return; }
     char when[8] = "";
     if (st.asOf) clk::fmtEpoch(when, sizeof(when), "%H:%M", st.asOf);
-    if (st.held) {
+    // `held AND external`, not `held`: granted() already makes a grant on a
+    // router with no outside address of its own Why::GatewayBusy rather
+    // than Why::Ok, and this row branched on `held` alone and never reached
+    // the reason, so it read "-:6400 mapped, 1h59m left" over a router
+    // whose WAN has no address at all (the code review's second pass). It
+    // is a settled steady state and not a transient: a router still waiting
+    // on its own lease is re-asked once a minute for ever. portmap.h calls
+    // the address "worth more than the mapping", so the surface that cannot
+    // show one must not be the one saying "mapped".
+    //
+    // Written as a condition on this branch rather than as an early return
+    // above it, which is where it went first and which swallowed the
+    // "asking the router..." line below: on a first probe nothing is held
+    // and no address is known either, so an early return on !external would
+    // have answered every in-flight exchange with its reason instead.
+    if (st.held && st.external) {
         char addr[16];
         addrText(st.external, addr, sizeof(addr));
         // On a board where only the SSH mapping is held, the number shown is
         // the SSH one and says so, rather than reading as the telnet port.
+        //
+        // Known and left: the port shown is slot 0's and the lease is
+        // whichever slot's is shorter, so a board holding a PERMANENT
+        // telnet mapping and a leased SSH one prints the SSH lease beside
+        // the telnet port. It needs a router that grants both kinds, which
+        // takes g_uPerm being cleared between them, and it errs toward
+        // under-claiming; PORTMAP shows the two mappings separately. The
+        // honest fix is a Status field saying which slot the lease is for.
         const unsigned shown = st.port ? st.port : st.sshPort;
         const char* which    = st.port ? "" : " ssh";
         // kWide is CONFIG's box at 80 columns, 56 less the one
@@ -1141,12 +2501,24 @@ void line(char* out, size_t n, bool wide) {
         if (wide && st.carrier) {
             snprintf(out, n, "%s:%u%s mapped, NOT on the internet", addr, shown, which);
         } else if (wide) {
-            const unsigned long h = st.leftSecs / 3600u;
-            const unsigned long m = (st.leftSecs % 3600u) / 60u;
-            const int len = snprintf(out, n, "%s:%u%s mapped, %luh%02lum left, as of %s",
-                                     addr, shown, which, h, m, when[0] ? when : "-");
+            // The lease, or the word for a mapping that has none: a UPnP
+            // router that would only make a permanent one gave no figure,
+            // and "0h00m left" over a working mapping is the
+            // confidently-wrong class this file exists to avoid.
+            // 32 and not 16: GCC bounds a %lu at ten digits whatever the
+            // value can really be, and -Wformat-truncation is an error on
+            // the target build, so the buffer is sized for the compiler's
+            // arithmetic rather than for the two digits leftSecs can
+            // actually produce.
+            char lease[32];
+            if (st.permanent) snprintf(lease, sizeof(lease), "permanent");
+            else snprintf(lease, sizeof(lease), "%luh%02lum left",
+                          static_cast<unsigned long>(st.leftSecs / 3600u),
+                          static_cast<unsigned long>((st.leftSecs % 3600u) / 60u));
+            const int len = snprintf(out, n, "%s:%u%s mapped, %s, as of %s",
+                                     addr, shown, which, lease, when[0] ? when : "-");
             if (len < 0 || len > kWide)
-                snprintf(out, n, "%s:%u%s mapped, %luh%02lum left", addr, shown, which, h, m);
+                snprintf(out, n, "%s:%u%s mapped, %s", addr, shown, which, lease);
         } else {
             snprintf(out, n, "%s %s", st.carrier ? "carrier addr" : "mapped", when);
         }

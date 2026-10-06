@@ -11196,12 +11196,40 @@ def syscfg_cgnat_on():
 #
 # Each test runs on a copy of the board (lag_board), never the harness's own,
 # so port_map is never switched on under the other tests.
+#
+# UPnP (1.2.2-portmap.3) is three protocols rather than one datagram, so a
+# upnp router needs two ports of its own beside the UDP one: --ssdp-port,
+# which the board is pointed at with BBS_HOST_SSDP, and --http-port, which
+# it does NOT need because it reads that out of the LOCATION the search
+# answers with. On a board build the search also goes to the multicast
+# group; on the host it does not, so a lane never puts a datagram on the
+# operator's own network.
+#
+# One thing a UPnP test must not assume: the stand-in answers SSDP from
+# 127.0.0.1, which on the host IS the gateway, and the firmware refuses a
+# LOCATION whose host is not the gateway. --fault ctlelsewhere is what
+# proves that refusal; without it a test cannot tell the guard from its
+# absence.
 # ---------------------------------------------------------------------------
 
-def router_start(udp, proto="pcp", fault="none", extra=()):
-    """tools/fake_router.py on 127.0.0.1:udp. Returns (proc, logpath)."""
+def router_start(udp, proto="pcp", fault="none", extra=(), ssdp=0, http=0):
+    """tools/fake_router.py on 127.0.0.1:udp. Returns (proc, logpath).
+
+    ssdp and http are the UPnP side's own ports and must be given
+    EXPLICITLY for a proto="upnp" router: the stand-in defaults them to
+    udp + 1 and udp + 2, and the udp offsets in this file are consecutive,
+    so a default would land on the next test's router.
+
+    --fault ctlabs needs a FOURTH port, http + 1, where the stand-in puts
+    the absolute control URL's listener. Leave room for it.
+    """
     import subprocess
     import tempfile
+    # Enforced, not left to the docstring: a upnp router whose SSDP port
+    # defaults to udp + 1 lands on the NEXT test's router, because the udp
+    # offsets in this file are consecutive, and the failure reads as "the
+    # board heard nothing" with nothing naming the cause.
+    assert proto != "upnp" or ssdp, "a upnp router needs an explicit ssdp port"
     log = pathlib.Path(tempfile.mkdtemp(prefix="bbs-router-")) / "router.log"
     fh = open(log, "wb")
     # Its stdout goes to a FILE, never a pipe. A pipe nobody drains fills
@@ -11209,7 +11237,10 @@ def router_start(udp, proto="pcp", fault="none", extra=()):
     # how the directory server was twice diagnosed as wedging under load.
     proc = subprocess.Popen(
         [sys.executable, str(ROOT / "tools" / "fake_router.py"),
-         "--port", str(udp), "--proto", proto, "--fault", fault, *extra],
+         "--port", str(udp), "--proto", proto, "--fault", fault,
+         *(("--ssdp-port", str(ssdp)) if ssdp else ()),
+         *(("--http-port", str(http)) if http else ()),
+         *extra],
         stdout=fh, stderr=subprocess.STDOUT)
     end = time.time() + 5
     while time.time() < end:
@@ -11230,14 +11261,31 @@ def router_stop(proc, log):
     shutil.rmtree(log.parent, ignore_errors=True)
 
 
-def portmap_board(port, udp, on=True, proto="pcp", fault="none", extra=(), edits=None):
+def portmap_board(port, udp, on=True, proto="pcp", fault="none", extra=(),
+                  edits=None, ssdp=0, http=0):
     """A board copy with port_map set and its gateway pointed at a stand-in
-    router. Returns (tmp, bproc, rproc, rlog)."""
-    rproc, rlog = router_start(udp, proto, fault, extra)
+    router. Returns (tmp, bproc, rproc, rlog).
+
+    For UPnP, pass ssdp (and optionally http): BBS_HOST_SSDP is where the
+    board sends its M-SEARCH, because 1900 is one number and the lanes run
+    side by side, exactly as BBS_HOST_GATEWAY carries 5351's stand-in. The
+    board never needs the HTTP port: it takes that from the LOCATION the
+    router answers with, which is the point of parsing it.
+    """
+    rproc, rlog = router_start(udp, proto, fault, extra, ssdp=ssdp, http=http)
     e = {("", "port_map"): "yes" if on else "no"}
     e.update(edits or {})
-    tmp, bproc = lag_board(port, edits=e,
-                           env={"BBS_HOST_GATEWAY": f"127.0.0.1:{udp}"})
+    # BBS_HOST_SSDP is set ALWAYS, falling back to the stand-in's own UDP
+    # port. Since 1.2.2-portmap.3 a round with nothing held walks all three
+    # protocols, so every test here sends an M-SEARCH; unset, that goes to
+    # 127.0.0.1:1900, which on the host IS the gateway, so the firmware's
+    # gateway bound does not protect it and any SSDP responder on loopback
+    # would be believed and fetched from. Pointed at the stand-in's UDP
+    # port instead, the search gets a NAT-PMP version refusal with no
+    # LOCATION in it and dies inside the lane.
+    env = {"BBS_HOST_GATEWAY": f"127.0.0.1:{udp}",
+           "BBS_HOST_SSDP": str(ssdp or udp)}
+    tmp, bproc = lag_board(port, edits=e, env=env)
     return tmp, bproc, rproc, rlog
 
 
@@ -11412,8 +11460,8 @@ def test_portmap_deaf():
     ok = True
     try:
         ok &= check("the board gave up on both protocols",
-                    "answered neither PCP nor NAT-PMP" in
-                    copy_log(tmp, "answered neither PCP nor NAT-PMP", 25))
+                    "no PCP or NAT-PMP" in
+                    copy_log(tmp, "no PCP or NAT-PMP", 25))
         dropped = router_log(rlog).count("dropped a")
         time.sleep(5)
         again = router_log(rlog).count("dropped a")
@@ -11422,8 +11470,12 @@ def test_portmap_deaf():
         ok &= check(f"a round is a handful of datagrams, not a storm ({dropped})",
                     0 < dropped <= 8)
         s, text = portmap_page(port, "PmDeaf")
-        ok &= check("PORTMAP says the router does not do this",
-                    "does not do this" in text)
+        # The reason grew a third limb in 1.2.2-portmap.3 ("off, not set
+        # up, or does not have it") after a real router was found with the
+        # feature switched on and no interfaces declared, which answers
+        # nothing and looks from here exactly like absence.
+        ok &= check("PORTMAP says the router does not have it",
+                    "does not have it" in text)
         ok &= check("and tells the sysop where to look", "UPnP" in text)
         ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
         s.close()
@@ -11630,7 +11682,7 @@ def test_portmap_stranger():
                 break
             time.sleep(0.25)
         ok &= check(f"the board still gave up on the router ({sent} forged replies)",
-                    "answered neither PCP nor NAT-PMP" in
+                    "no PCP or NAT-PMP" in
                     copy_log(tmp, "answered neither", 25))
         s, text = portmap_page(port, "PmStr")
         ok &= check("it claims no mapping", "mapped" not in text.lower())
