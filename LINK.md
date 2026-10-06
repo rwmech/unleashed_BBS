@@ -16,7 +16,9 @@ source. See the LICENSE file for terms.
 
 # The µnleashed link
 
-Status: **1.2.0, in development.** The design below is settled (Rob,
+**Applies to versions:** firmware 1.2.0 (plugin API 1.3), and camsat 1.1.0 where it describes the camera sat.
+
+Status: **released in 1.2.0.** The design below is settled (Rob,
 2026-09-26); where a figure is an estimate it says so, and where a
 behaviour of ESP-IDF was checked it names the header or page it was
 checked against.
@@ -122,7 +124,7 @@ Checked against `components/esp_wifi/include/esp_now.h` and
   airtime from the callers' Wi-Fi (gateway pings 1-4 ms against 7-21 ms at
   1 Mbps). `LINK` says how many devices are on 1 Mbps just now.
 - **Peers: 20 in the ESP-NOW table.** The link caps itself at
-  **8** (`BBS_LINK_PEERS`), and SYS and `LINK` say when that is full.
+  **8** (`ulink::Engine::kPeers`, `src/core/link.h`), and SYS and `LINK` say when that is full.
   **Peers are added unencrypted at the ESP-NOW layer**; the link does its
   own encryption (below). So the ESP-NOW encrypted-peer ceiling
   (`CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM`, default 7, 17 at most, and
@@ -211,7 +213,8 @@ CONFIG link). The window is open for 2 minutes, and one pairing at a time.
 (the ESP32-CAM has only RESET) is in pairing mode for 5 minutes after any
 boot **while it holds no pairing**; to pair it again it is told to forget
 its pairing by a physical act its own firmware documents (camsat: IO0 held
-low while it powers up, as its README says). Physical access to the peer is
+low for 5 s while it runs, as its README says; held at power-up, IO0 is the
+ESP32's flashing mode instead). Physical access to the peer is
 ownership of it.
 
 **The exchange** (family 0, all in the clear; commit, then reveal):
@@ -616,8 +619,11 @@ tables are 8 KB of static DRAM.)
   writer, the files plugin, and filing goes through it. A board with no
   card mounted refuses PICTURE; the camera satellite plugin is `PF_SD` for
   that reason.
-- The camera satellite's BBS side is **in every official image, off by
-  default**, the base WROOM included (Rob): any board can add a camera.
+- The camera satellite's BBS side is **meant for every official image, off
+  by default**, the base WROOM included (Rob): any board can add a camera.
+  Not yet in 1.2.0: camsat's line in `plugins.lock` is still commented out
+  and no release environment names it, so the v1.2.0 images do not carry
+  it.
 - A caller's snap from a satellite shows the camera's usual spinner while
   it waits, and the same limits per handle apply: one count across every
   camera on the board, not one per camera (Rob).
@@ -952,7 +958,6 @@ unleashed_camsat/
   unleashed-plugin.ini     the manifest
   bbs/                     sources built into the BBS firmware
     camsat.cpp
-    camsat.h
   firmware/                anything else (here: the satellite's own PlatformIO project)
   LICENSE
 ```
@@ -960,10 +965,10 @@ unleashed_camsat/
 ```ini
 ; unleashed-plugin.ini
 name        = camsat                 ; a-z 0-9 _, also its [plugin:camsat] section
-version     = 1.0.0
-api         = 1.0                    ; the core plugin API it was written against
+version     = 1.1.0
+api         = 1.3                    ; the core plugin API it was written against
 descriptor  = kCamsatPlugin          ; the const Plugin it defines
-requires    = link                   ; core features it needs (link, sd, camera...)
+requires    = link sd                ; core features it needs (link, sd, camera...)
 boards      = *                      ; or a list: esp32dev ws_s3_lcd147
 license     = GPL-3.0-or-later
 ```

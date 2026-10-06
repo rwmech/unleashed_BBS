@@ -22,6 +22,8 @@
 
 # Putting your board on the internet
 
+**Applies to versions:** firmware 1.2.0.
+
 People think running a public system is something you need a provider, a bill and a certificate for. It is not, and it never was. A board on the internet is a machine that answers a phone number. The phone number is now an address and a port, and forwarding it is one line in your router.
 
 ## What you need first

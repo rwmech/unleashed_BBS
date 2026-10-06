@@ -14,6 +14,8 @@ source. See the LICENSE file for terms.
 
 # Backup and restore
 
+**Applies to versions:** firmware 1.2.0.
+
 Everything that matters on the board travels as one `.zip`: `system.cfg`, the user accounts, the information pages and every screen. You download it, change what you want, and upload it back. Logs are not in the zip and are never touched by a restore.
 
 The zip spans two partitions. `system.cfg`, `users.txt` and the information pages live on `userdata`, which a firmware or filesystem upload never touches; the screens live on `storage`, which a filesystem upload replaces. A restore puts each file back where it belongs, the zip format itself is unchanged, and a backup taken from an older board still restores correctly.

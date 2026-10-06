@@ -21,6 +21,8 @@
 
 # µnleashed BBS: chat and messages
 
+**Applies to versions:** firmware 1.2.0.
+
 The chat room is one room, the way DDial and Gtalk did it. Everybody who joins sees every line as it is said, each line carries who said it and which node they are on, and nothing scrolls past that a caller has not seen.
 
 `CHAT` joins. `/q` leaves, and `/q+` leaves and logs off in one go. That is the whole thing.

@@ -15,6 +15,8 @@
 
 # Which ESP32 to use
 
+**Applies to versions:** firmware 1.2.0 for the choice of chip. Its board section covers the Waveshare ESP32-S3-LCD-1.47 only; [README.md](README.md) lists every board 1.2.0 has a profile for.
+
 ## The requirement: two cores and Wi-Fi
 
 **Both, or it is not a candidate.** This is architectural, not a preference.

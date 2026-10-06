@@ -13,6 +13,8 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS
 
+**Applies to versions:** firmware 1.2.0.
+
 Electronic freedom on a microcontroller. No web, no cloud, no browser.
 
 µnleashed is a telnet BBS that runs on a bare ESP32-WROOM-32E and grows into an IoT terminal server through plugins: real hardware you reach from a 1982 home computer, a glass terminal, a phone or anything else that speaks telnet.
@@ -58,6 +60,9 @@ Docs:
 | [CLIENTS.md](CLIENTS.md) | every machine that can call in, and what it needs |
 | [PUBLIC.md](PUBLIC.md) | putting your board on the internet, and what that risks |
 | [ANNOUNCE.md](ANNOUNCE.md) | listing your board in a directory, and the protocol for running one |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | sending a change: the flow, signing off (DCO), licence and copyright, review |
+| [ADDING_A_BOARD.md](ADDING_A_BOARD.md) | porting the firmware to a new ESP32 or ESP32-S3 board, and the bench proof a board needs |
+| [ADDING_A_SAT.md](ADDING_A_SAT.md) | building a sat (a door sat or an orbiter) in its own repository |
 | [CHANGELOG.md](CHANGELOG.md) | what changed in every build |
 
 ## What it's for

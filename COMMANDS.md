@@ -13,6 +13,8 @@ source. See the LICENSE file for terms.
 
 # µnleashed BBS: command reference
 
+**Applies to versions:** firmware 1.2.0.
+
 Version 0.22.0. This file tracks every command and key the BBS understands, and is updated with each build that changes them.
 
 ## Calling in
