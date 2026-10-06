@@ -2366,13 +2366,27 @@ this tree.
     free. So: **never set `PLATFORMIO_DATA_DIR` for a measurement run**, and
     when a build fails in the build system rather than in the compiler, look
     at that checksum before the toolchain.
-  - Sizes: CHANGELOG 1.2.2-portmap.3 has the table. **The ESP32-CAM is
-    the floor at 2,224 bytes of static DRAM free** (2,544 before this),
-    which supersedes the figure in the 1.2.2-portmap.2 entry above: that
-    one is history now, and this is the number to quote and to keep
-    current. About 320 bytes a board, which is the two 96-byte URL
-    buffers, the address capture and nine 8-byte matchers, and no
-    per-session cost at all.
+  - **The follow-up sweep that measured the other sixteen environments hit
+    the same corruption with no variable in sight**, which is the half of
+    the lesson the checksum mechanism does not cover: a second `pio run -e
+    esp32dev_release` landed on the first before it had finished, and two
+    builds racing into one `.pio/build/<env>` directory reproduces exactly
+    the `sdkconfig.h`-not-found and `.sconsign311.tmp` symptoms above, no
+    checksum mismatch required. The rule generalises past the environment
+    variable: **one `pio run` at a time in this tree, full stop**, checked
+    with `ps aux | grep pio` before every invocation. Every environment,
+    including the seven this lane had already confirmed, was rebuilt from a
+    fully removed `.pio/build` rather than trusting anything a collision
+    might have touched; the release/non-release pairs matching their twins'
+    static DRAM to the byte is the cross-check that it worked.
+  - Sizes: CHANGELOG 1.2.2-portmap.3 has the table, now all twenty-three
+    environments. **The ESP32-CAM is the floor at 2,224 bytes of static
+    DRAM free** (2,544 before this), which supersedes the figure in the
+    1.2.2-portmap.2 entry above: that one is history now, and this is the
+    number to quote and to keep current. About 310-320 bytes a board,
+    which is the two 96-byte URL buffers, the address capture and nine
+    8-byte matchers, and no per-session cost at all, confirmed on every
+    one of the twenty-three rather than assumed from seven.
   - **UPnP has never run on hardware**, and the router that motivated it
     cannot prove it: Agentville's MikroTik has UPnP switched off and
     NAT-PMP on, so the next bench item is Rob enabling UPnP there instead.

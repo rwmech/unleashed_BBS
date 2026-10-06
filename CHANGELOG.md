@@ -195,34 +195,63 @@ each image rather than off PlatformIO's RAM percentage, which is against
 | | static DRAM | free | image |
 |---|---|---|---|
 | esp32dev (WROOM) | 165,792 → 166,104 (**+312**) | 14,944 → 14,632 | 1,284,304 → 1,291,776 (+7,472) |
+| esp32dev_release | 166,104 | 14,632 | 1,291,776 |
+| esp32dev_backuptest | 166,096 | 14,640 | 1,291,584 |
+| esp32dev_diag | 166,104 | 14,632 | 1,292,096 |
+| esp32dev_wdttest | 166,104 | 14,632 | 1,291,952 |
 | esp32cam_aithinker | 178,192 → 178,512 (**+320**) | **2,544 → 2,224** | 1,417,216 → 1,425,200 (+7,984) |
 | esp32cam_aithinker_release | 178,512 | 2,224 | 1,425,232 |
 | freenove_wrover_cam | 177,040 | 3,696 | 1,368,688 |
 | freenove_wrover_cam_release | 177,040 | 3,696 | 1,368,704 |
 | ws_s3_lcd147 | 263,296 → 263,600 (**+304**) | 78,464 → 78,160 | 1,512,832 → 1,520,480 (+7,648) |
+| ws_s3_lcd147_release | 263,600 | 78,160 | 1,520,480 |
 | ws_s3eth | 266,640 → 266,968 (**+328**) | 75,120 → 74,792 | 1,531,536 → 1,539,184 (+7,648) |
+| ws_s3eth_release | 266,968 | 74,792 | 1,539,088 |
+| ws_s3touch43b | 266,184 | 75,576 | 1,537,440 |
+| ws_s3touch43b_release | 266,184 | 75,576 | 1,537,600 |
+| ws_s3touch2 | 277,240 | 64,520 | 1,609,856 |
+| ws_s3touch2_release | 277,240 | 64,520 | 1,609,792 |
+| makerfabs_s3_par35 | 263,096 | 78,664 | 1,531,360 |
+| makerfabs_s3_par35_release | 263,096 | 78,664 | 1,531,296 |
+| makerfabs_s3_par35v2 | 268,336 | 73,424 | 1,543,632 |
+| makerfabs_s3_par35v2_release | 268,336 | 73,424 | 1,543,632 |
+| guition_4848s040 | 270,400 | 71,360 | 1,561,760 |
+| guition_4848s040_release | 270,400 | 71,360 | 1,561,504 |
 
-Seven of the twenty-three environments, all with no warnings, and the host
-build. **`esp32dev`'s row was re-measured afterwards from a clean, plain
-`pio run`** (no `PLATFORMIO_DATA_DIR`, SUCCESS, 0 warnings) and reproduced
-to the byte: 166,104 static DRAM and a 1,291,776 byte image. That matters
-because the sweep that produced these figures set `PLATFORMIO_DATA_DIR`,
-which is part of PlatformIO's project checksum, and once a plain run also
-touched the tree the two wiped each other's `.pio/build` and the remaining
-environments failed in the build system rather than in the compiler. The
-figures are sound; the method was not, and CLAUDE.md now carries the
-symptoms, because none of them looks like the cause. These seven are the four 1.2.2-portmap.2 recorded, so there is a
-delta to give, plus the release twins of the two camera boards. The other
-sixteen were still compiling when this was written and are **not** measured
-here: `esp32dev_release`, `esp32dev_backuptest`, `esp32dev_diag`,
-`esp32dev_wdttest`, `ws_s3eth_release`, `ws_s3_lcd147_release`,
-`ws_s3touch43b`, `ws_s3touch43b_release`, `ws_s3touch2`,
-`ws_s3touch2_release`, `makerfabs_s3_par35`, `makerfabs_s3_par35_release`,
-`makerfabs_s3_par35v2`, `makerfabs_s3_par35v2_release`,
-`guition_4848s040` and `guition_4848s040_release`. `portmap.cpp` is identical in every image and
-has no board gating but `BBS_HAS_SSH`, so the delta is expected to match
-the profiles above; expected is not measured, which is why they are named
-rather than assumed.
+All twenty-three environments, all with no warnings, and the host build.
+**`esp32dev`'s row was re-measured from a clean, plain `pio run`** (no
+`PLATFORMIO_DATA_DIR`, SUCCESS, 0 warnings) and reproduced to the byte:
+166,104 static DRAM and a 1,291,776 byte image. That mattered because the
+sweep that produced the first seven rows set `PLATFORMIO_DATA_DIR`, which is
+part of PlatformIO's project checksum, and once a plain run also touched
+the tree the two wiped each other's `.pio/build` and the remaining
+environments failed in the build system rather than in the compiler.
+
+**The same trap bit the follow-up sweep that measured the other sixteen,
+from outside rather than from a set variable.** Three `pio run` calls for
+`esp32dev_release` landed on top of one another in the same minute, two of
+them started without knowing a third was already running, and the shared
+`.pio/build/esp32dev_release` came apart exactly as CLAUDE.md now describes:
+`sdkconfig.h` not found mid-compile, then SCons unable to write its own
+`.sconsign311.tmp` on the way out. No code was at fault; the fix was the one
+CLAUDE.md already states and this lane re-learned the hard way, one
+environment at a time, confirmed with `ps aux` before every `pio run` that
+nothing else was building. **The whole `.pio/build` directory was then
+removed and every environment above, including the four already-confirmed
+and `esp32dev` itself, was rebuilt from nothing** rather than trusting any
+row a collision could have touched. Each of the sixteen new rows comes from
+its own clean, solitary, sequential build.
+
+**Every release/non-release pair matches its twin's static DRAM to the
+byte** (`ws_s3eth`/`_release` both 266,968; `ws_s3touch43b` both 266,184;
+`ws_s3touch2` both 277,240; `makerfabs_s3_par35` both 263,096;
+`makerfabs_s3_par35v2` both 268,336; `guition_4848s040` both 270,400), which
+is what `_release` should do (it changes build flags, not struct layout)
+and is the cross-check that the rebuild was sound rather than another
+half-wiped directory that happened to link. `portmap.cpp` reads no board
+define but `BBS_HAS_SSH`, and the sixteen confirm what the seven implied:
+the delta is the same roughly-310-byte shape everywhere, camera boards and
+S3 boards alike.
 
 About 310 bytes a board: the two 96-byte URL buffers, the 16-byte address
 capture, nine 8-byte matchers and a dozen words of state, with **no
