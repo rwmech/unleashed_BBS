@@ -464,8 +464,12 @@ void Bbs::coElevate(Session& s, Access level, uint32_t now, bool setup, bool atL
 }
 
 // ---------------------------------------------------------------------------
-// nodeByArg: "1".."6", "S" (sysop), "B" (busy line). *rest gets the text
-// after the node token. nullptr if the token is not a node.
+// nodeByArg: a line, by number or by letter. "1".."10" are the callers,
+// "0" or "S" the sysop, "11" or "B" the busy line; the numbers are the ids
+// Bbs::begin assigns, so they are contiguous and there is no gap to fall
+// into. *rest gets the text after the token. nullptr if it is not a line.
+//
+// (It said "1".."6" until 1.2.2, from when there were six nodes.)
 // ---------------------------------------------------------------------------
 Session* Bbs::nodeByArg(const char* arg, const char** rest) {
     while (*arg == ' ') ++arg;
@@ -481,7 +485,21 @@ Session* Bbs::nodeByArg(const char* arg, const char** rest) {
         char* end = nullptr;
         long n = strtol(p, &end, 10);
         p = end;
-        if (n >= 1 && n <= BBS_MAX_NODES) o = &nodes_[n - 1];
+        // Every line by the number it carries. Bbs::begin gives the sysop
+        // id 0 and the busy line BBS_MAX_NODES + 1, with the callers
+        // between, so the numbers that name a line are exactly
+        // 0..BBS_MAX_NODES + 1 with no gap, and this accepts all of them.
+        // S and B still work and are still what nodeName prints; these are
+        // the same two lines reached by the number instead of the letter.
+        //
+        // Why it matters: DDial numbered its console 0 ("The sysop's handle
+        // appears in the /S list as caller #0") and so did GTalk
+        // (cport->console = (!port_num)), so a caller who learned on either
+        // types a number. Our own rule in bbs_util.h says the number in a
+        // list has to be the number you type; this is the other half of it.
+        if (n == 0)                            o = &sysop_;
+        else if (n == BBS_MAX_NODES + 1)       o = &busy_;
+        else if (n >= 1 && n <= BBS_MAX_NODES) o = &nodes_[n - 1];
     }
     if (*p && *p != ' ') o = nullptr;         // "5x", "Steve"
     while (*p == ' ') ++p;
