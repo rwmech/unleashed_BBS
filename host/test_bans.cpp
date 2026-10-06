@@ -15,10 +15,20 @@
  *               the first address was free to try again.
  *
  *               The table refuses now: the ninth ban is simply not recorded,
- *               and the eight that exist keep standing. Every check below
- *               fails against the parent commit except the ones marked as
- *               the unchanged common path, which is the point of having them
- *               here: the fix must not have cost the ordinary case.
+ *               and the eight that exist keep standing.
+ *
+ *               **Measured against the parent (9f60b4e), not assumed: 10 of
+ *               27 checks fail there and 17 pass.** The 17 are the blocks
+ *               marked as the unchanged common path, the setup lines either
+ *               build passes, and a handful that pass on the parent for a
+ *               reason that has nothing to do with what they ask: with the
+ *               fail-open, slot 0 has been wiped by the time they look, so
+ *               "its slot is free for somebody else" is free for the wrong
+ *               reason. Those are kept because they are what proves the fix
+ *               did not cost the ordinary case, not because they catch
+ *               anything. An earlier version of this comment claimed every
+ *               check failed on the parent, which was an over-claim, and the
+ *               aheadTake block below is the one it hid: see its own note.
  *
  * Libraries:    none
  * Targets:      the Linux host build only
@@ -175,6 +185,22 @@ int main() {
               !b.banned(addr(1), gone));
         check("so it has not come back 24.86 days on", !b.banned(addr(0), ages));
         check("and its slot is free for somebody else", ban(b, addr(2), ages));
+    }
+
+    // aheadTake with no slot to count the allowance in, asked FIRST and with
+    // nothing else done to the table. The block above asks it only after the
+    // ninth address has been through ban(), which on the parent had already
+    // handed that address slot 0's wiped entry and a ban of its own, so the
+    // refusal there was "you are banned" and the check passed against the
+    // very bug it sat beside. Asked cold it is the fail-open again: the
+    // parent gives the allowance out AND lifts slot 0's ban to do it.
+    {
+        BanList b;
+        const uint32_t t = 1000;
+        for (int i = 0; i < BBS_BAN_SLOTS; ++i) ban(b, addr(i), t);
+        check("a held answer from a ninth address is refused, asked cold",
+              !b.aheadTake(addr(60), t));
+        check("and asking did not cost slot 0 its ban", b.banned(addr(0), t));
     }
 
     // A failure counted on an address with no slot must not be remembered as
