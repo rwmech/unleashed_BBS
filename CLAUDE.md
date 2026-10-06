@@ -1729,6 +1729,88 @@ this tree.
       relay is the board's single peer and the sats sit behind it, then
       `kPeers = 8` stops being the wall and the relay becomes the fan-out,
       which may be the whole answer to "a few dozen".
+- **A chat line that is an AI, CONFIG chatbot** (Rob, 2026-10-06: "config
+  chatbot will place into the chat something you can talk to ... The config
+  chatbot should have the ability to read a file on the SD for the system
+  prompt, use a small reasonable system prompt that is configurable ... Chat
+  and /p messages should work"). Version not set; Rob called it "pretty small
+  since youre just brokering the conversation".
+  - **It works on a WROOM for one reason: no TLS.** A local LLM on the
+    sysop's own network answers plain HTTP (Ollama's `/api/chat` on
+    11434), so this needs a socket and a JSON body, not the ~40 KB of heap
+    mbedTLS wants. That is the same wall that sent social posting to a
+    webhook and FidoNet to a gateway sat, and it is why a *local* LLM is
+    the design rather than a cloud API.
+  - **The AI is a line number, not a letter** (Rob: "forget the AI part,
+    just make it a node 12 or 0, something that can't be a user"). It is
+    **12**, because the two numbers that cannot be a caller are already
+    spoken for: `sysop_.id = 0` and `busy_.id = BBS_MAX_NODES + 1` (11),
+    both in `Bbs::begin`. `S` and `B` are only how `nodeName` prints those
+    two; underneath, the sysop has always been 0. Rob guessed that before
+    anyone looked ("the SYSOP line S might need to be 0") and the code
+    already agreed with him.
+  - **It must not have a `Session`.** One is 6,980 bytes and the ESP32-CAM
+    has 2,224 of static DRAM free, so twelve-plus-one does not fit on the
+    floor board. Everything that addresses a line wants a *number*, not a
+    session: `/p` resolves one through `nodeByArg`, and chat renders
+    `#<node>:<handle><bracket>` from `nodeName`. So the bot's identity is a
+    node number held in chat's own room list, and the work is teaching those
+    two functions about 12 rather than finding 7 KB.
+  - **`/p10 hello` already works**, checked in the source rather than
+    assumed: `roomCommand` ends the verb at the first digit, and
+    `nodeByArg` then runs `strtol(p, &end, 10)`, so it reads the whole
+    number. (The `/sq 10` single-digit bug was `idOfTag`, a different
+    function, fixed in 1.2.1-dev.3.) What stops 12 is one line:
+    `if (n >= 1 && n <= BBS_MAX_NODES)`.
+  - **`/p0` is refused today while `/pS` works, and that is backwards.**
+    The digit branch starts at 1, so the one line a caller can be told to
+    type cannot be typed. **In 1.2.2 on its own** (Rob, 2026-10-06: "we
+    should adopt the similar change, include in 1.2.2"), ahead of the bot
+    and independent of it: `nodeByArg` takes `0` as the sysop and `11` as
+    the busy line, beside the `S` and `B` it already takes, so every line
+    on the board is reachable by the number `WHO` could print for it.
+    `nodeName` keeps printing `S` and `B` until the DDial research says
+    otherwise, so nothing a caller sees moves. Rob: "ddial users are NOT
+    gonna add a fucking space" and "/p10 should work, it better work".
+  - **Settling the addressing now is the point, because the link inherits
+    it** (Rob: "when you connect ddial up eventually its going to have this
+    same limitation"). Whether the hidden sysop line should also *show* as
+    0 rather than `S` is Rob's call off
+    `internal/research-ddial-line-numbering-2026-10-06.md`, which asks what
+    DDial and GTalk actually numbered their console and their linked
+    stations.
+  - **To design before building:** who pays for the wait (a model answers
+    in seconds, and Rule no. 1 says not on the loop, so the request belongs
+    on the runner with the room told the bot is typing); what the bot is
+    allowed to see (the room's history is other people's conversation, and
+    a system prompt read off the card is the sysop's, not a caller's); a
+    rate limit, since every line addressed to it costs the sysop's own GPU;
+    and what happens when the model is unreachable, which must be the bot
+    saying so in the room rather than the room stopping.
+
+- **An RSS reader, as a satellite door** (Rob, 2026-10-06: "think of adding
+  an RSS reader in here. This might be best served as a satellte door but
+  the goal is to have a RSS reader that the user can read RSS feeds
+  specified by the sysop as RSS News and then the satellite fetches the data
+  and allows the user to view any specified RSS feed plus store any last
+  read markers per-user"). Queued, version not set.
+  - **A sat is right, and for the TLS reason again**: nearly every feed
+    worth reading redirects to https, so the fetch cannot live on a WROOM.
+    A sat joined to the router's Wi-Fi beside ESP-NOW does the fetching, and
+    it keeps untrusted XML parsing off the board as well, which is the same
+    argument that put binkp on a gateway sat rather than in the core.
+  - **The per-user last-read marker is a solved problem here.** The forums
+    already carry exactly it: `forums_ptr.h` is a mark plus a 16-byte window
+    of what has been read above it, with no board in it and 22 host checks.
+    Reuse it rather than inventing a second read pointer, which is how a
+    board ends up with two that disagree.
+  - **The question worth answering first: is a feed a forum?** If each feed
+    becomes a read-only forum whose posts the sat delivers through the
+    external-post link family that FidoNet already needs (author, origin,
+    subject, body, message id), then the reader, the paging, the wrapping,
+    the unread counts and the read pointers all come for free and the board
+    gains no new subsystem. If it gets its own viewer instead, every one of
+    those is built again. Decide that before anything is written.
 - **An AP gateway sat: an open access point with a captive portal, listing
   the boards on the ESP-NOW network** (Rob, 2026-10-05: "Id like to be able
   to have a satellite be an AP and provide a gateway to the board directly
@@ -2000,8 +2082,10 @@ this tree.
     fail-open table and the 24.86-day resurrection); port mapping with all
     three protocols, proven on a real router; **`ssh_port` in announce**, so
     the directory's padlock can appear at all; the **32-hex token refusal**
-    (the bug that queued HQ); **plugin on/off in CONFIG's page list**; and
-    **`PORTMAP TEST`**, below.
+    (the bug that queued HQ); **plugin on/off in CONFIG's page list**;
+    **every line addressable by its number** (`/p0` for the sysop and `/p11`
+    for the busy line, the entry below the 1.2.3 block); and **`PORTMAP
+    TEST`**, below.
   - **Moved to 1.3:** themes, the hamburger menu on touch panels, the 4.3B
     panel alignment pass.
   - **Moved out of any version:** the screen redesign. Specified in
