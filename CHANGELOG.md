@@ -192,7 +192,34 @@ Sizes, off the ELF, against `cca169a`, measured by reading `_bss_end` out of
 each image rather than off PlatformIO's RAM percentage, which is against
 327,680 and is not the truth (CLAUDE.md).
 
-<!-- SIZES -->
+| | static DRAM | free | image |
+|---|---|---|---|
+| esp32dev (WROOM) | 165,792 → 166,104 (**+312**) | 14,944 → 14,632 | 1,284,304 → 1,291,776 (+7,472) |
+| esp32cam_aithinker | 178,192 → 178,512 (**+320**) | **2,544 → 2,224** | 1,417,216 → 1,425,200 (+7,984) |
+| esp32cam_aithinker_release | 178,512 | 2,224 | 1,425,232 |
+| freenove_wrover_cam | 177,040 | 3,696 | 1,368,688 |
+| freenove_wrover_cam_release | 177,040 | 3,696 | 1,368,704 |
+| ws_s3_lcd147 | 263,296 → 263,600 (**+304**) | 78,464 → 78,160 | 1,512,832 → 1,520,480 (+7,648) |
+
+Six of the twenty-three environments, all with no warnings, and the host
+build. The other seventeen were still compiling when this was written and
+are **not** measured here: `esp32dev_release`, `esp32dev_backuptest`,
+`esp32dev_diag`, `esp32dev_wdttest`, `ws_s3eth`, `ws_s3eth_release`,
+`ws_s3_lcd147_release`, `ws_s3touch43b`, `ws_s3touch43b_release`,
+`ws_s3touch2`, `ws_s3touch2_release`, `makerfabs_s3_par35`,
+`makerfabs_s3_par35_release`, `makerfabs_s3_par35v2`,
+`makerfabs_s3_par35v2_release`, `guition_4848s040` and
+`guition_4848s040_release`. `portmap.cpp` is identical in every image and
+has no board gating but `BBS_HAS_SSH`, so the delta is expected to match
+the profiles above; expected is not measured, which is why they are named
+rather than assumed.
+
+About 310 bytes a board: the two 96-byte URL buffers, the 16-byte address
+capture, nine 8-byte matchers and a dozen words of state, with **no
+per-session cost at all**, so the rule that every byte of a Session costs
+twelve does not apply. Seven and a half kilobytes of flash, which is the
+three stages, the SOAP bodies and the strings; nothing is linked only on
+some boards. **The ESP32-CAM is the floor at 2,224 bytes free.**
 
 **UPnP has not run on hardware.** Every testing plan needs Rob's explicit
 OK, so this lane is the code reviews and the builds and nothing else, and
