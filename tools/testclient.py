@@ -11467,8 +11467,18 @@ def test_portmap_deaf():
         again = router_log(rlog).count("dropped a")
         ok &= check(f"and then stopped asking ({dropped} datagrams, still {again})",
                     again == dropped)
-        ok &= check(f"a round is a handful of datagrams, not a storm ({dropped})",
-                    0 < dropped <= 8)
+        # The bound is ARITHMETIC, not a feel: kTries (3) datagrams a
+        # protocol, and since 1.2.2-portmap.3 a round with nothing held
+        # walks three of them, so nine. It said eight, written when there
+        # were two protocols, and UPnP's M-SEARCH made nine the right
+        # answer and the check the wrong one. Left exact rather than given
+        # headroom: a fourth protocol should fail here loudly instead of
+        # passing under a bound nobody revisits. UPnP's search lands on the
+        # stand-in's UDP port here (BBS_HOST_SSDP falls back to it when no
+        # test names an SSDP port), so the router counts it as a dropped
+        # datagram like the other six.
+        ok &= check(f"a round is kTries a protocol, three protocols ({dropped})",
+                    0 < dropped <= 9)
         s, text = portmap_page(port, "PmDeaf")
         # The reason grew a third limb in 1.2.2-portmap.3 ("off, not set
         # up, or does not have it") after a real router was found with the
@@ -11681,9 +11691,15 @@ def test_portmap_stranger():
             except OSError:
                 break
             time.sleep(0.25)
+        # The string waited for and the string checked have to be the SAME
+        # one. 1.2.2-portmap.3 reworded the line to "no PCP or NAT-PMP" and
+        # moved only the check, so this waited the full 25 seconds for a
+        # line that can no longer appear and then happened to pass on the
+        # log it had collected by then. It passed for the wrong reason and
+        # cost the test about 25 of its 45 seconds.
         ok &= check(f"the board still gave up on the router ({sent} forged replies)",
                     "no PCP or NAT-PMP" in
-                    copy_log(tmp, "answered neither", 25))
+                    copy_log(tmp, "no PCP or NAT-PMP", 25))
         s, text = portmap_page(port, "PmStr")
         ok &= check("it claims no mapping", "mapped" not in text.lower())
         ok &= check("and took no outside address from a stranger",
@@ -11789,13 +11805,21 @@ def test_portmap_toggle():
                     cfg_walk_to(s, b"router to forward"))
         s.send(b" ")                              # a yes/no row cycles on space
         s.pump(0.5)
+        # Read BEFORE the save, not after it. The give-back goes out on the
+        # board's next tick, which can easily land before the test gets
+        # round to reading the count, and then before is already 1 and
+        # before + 1 never arrives: the test asserted the give-back had not
+        # happened yet. It passed serially and failed in both parallel
+        # lanes of the first --jobs run it was ever in, which is the shape
+        # of every ordering bug here. Nothing else is sending: the board
+        # holds a mapping on a 7200 second lease and has stopped asking.
+        before = router_log(rlog).count("dropped a")
         s.send(F1)
         v = cfg_verdict(s, [b"Saved and live", b"Saved"], 10)
         ok &= check(f"saving that row alone is live, not next restart ({v})",
                     v == b"Saved and live")
         # The delete goes out; the deaf router never confirms it, which is
         # the whole point of this arrangement.
-        before = router_log(rlog).count("dropped a")
         ok &= check("and the board tries to give the mapping back",
                     portmap_count(rlog, "dropped a", before + 1, board_secs(25)))
         # And then STOPS. The give-back is armed on the setting's edge and
@@ -11805,6 +11829,22 @@ def test_portmap_toggle():
         # 1.75 s for ever, silently (the code review's second pass). Only a
         # datagram count can tell "gave the mapping back" from "is still
         # asking", which is why this is here and not in the review.
+        #
+        # The give-back is ONE request A MAPPING, so on a board that binds
+        # an SSH port there are two of them, a tick apart, and the check
+        # above returns on the first. Timing the silence from there put the
+        # second datagram inside the window and read it as "still asking":
+        # 250 bytes then 301, the first time this test was ever run under
+        # --board s3. So wait for the give-back to go quiet FIRST, bounded,
+        # and only then time five seconds of silence.
+        quiet = router_log(rlog).count("dropped a")
+        end = time.time() + board_secs(20)
+        while time.time() < end:
+            time.sleep(1.0)
+            again = router_log(rlog).count("dropped a")
+            if again == quiet:
+                break
+            quiet = again
         n1 = len(router_log(rlog))
         time.sleep(5)
         n2 = len(router_log(rlog))
@@ -12030,6 +12070,962 @@ def test_portmap_no_lag():
         stop_copy(bproc, tmp)
     return check("Rule no. 1", ok)
 
+
+
+# ---------------------------------------------------------------------------
+# UPnP IGD (1.2.2-portmap.3), the third protocol.
+#
+# Three protocols deep rather than one datagram: an SSDP search, an HTTP GET
+# of the device description, and SOAP actions at the control URL found inside
+# it. So a UPnP test needs three ports, and it derives them from ONE offset:
+# udp, then udp + 1 for SSDP, udp + 2 for the description and SOAP, and
+# udp + 3 for the second HTTP server the ctlabs fault needs. That is exactly
+# the run of four parallel.py reserves for every "PORT + N" it finds in this
+# file (port_offsets).
+#
+# **They SHARE three of those bases, 3934, 3938 and 3942, and share the
+# board ports the eighteen tests before them already share.** Giving each
+# test its own base, stepping by four, was the obvious thing and it cost
+# half the harness's parallel width: twenty bases made offsets 3964..4067
+# one contiguous reserved run, and two lanes collide when their bases differ
+# by ANY difference between two offsets, so a run of 104 forbids every base
+# gap under 104. parallel.py's "N workers fit in a port block" went 17 to 9,
+# and three shared bases put it back to 16. It is safe for the same reason
+# the older tests' shared board ports are: parallel.py runs one lane at a
+# time per worker, so no two tests here are ever bound at once. The cost of
+# a port offset is not the port, it is the hole it digs in the packing.
+#
+# Two of these are security tests rather than function tests, and both exist
+# because a code review found the board would otherwise fetch a stranger's
+# device description, adopt their control URL, believe their outside address
+# and publish their port to the directory as the one callers should dial:
+#   upnp_location_stranger   a LOCATION on a host that is not the gateway,
+#                            and the proof is that NO TCP connection is made
+#   upnp_ctl_crlf            a control URL carrying a request line of its
+#                            own, which must never reach the router
+# Neither can be written as "the board did not map", because that is also
+# what every other failure looks like. Each one watches the thing the attack
+# would have to produce, and asserts it never happened.
+# ---------------------------------------------------------------------------
+
+def upnp_board(port, udp, fault="none", edits=None, extra=()):
+    """A board copy pointed at a stand-in UPnP router.
+
+    SSDP is udp + 1 and the description and SOAP port udp + 2, both inside
+    the run of four parallel.py reserves for the caller's PORT + N offset,
+    so a UPnP test declares one offset and not three. The board is never
+    told the HTTP port: it reads that out of the LOCATION the search answers
+    with, which is the point of parsing it.
+
+    udp is one of three SHARED bases (3934, 3938, 3942); see the section
+    comment above for why that matters more than it looks.
+    """
+    return portmap_board(port, udp, proto="upnp", fault=fault, edits=edits,
+                         extra=extra, ssdp=udp + 1, http=udp + 2)
+
+
+def upnp_searches(rlog):
+    """How many M-SEARCHes this router has answered."""
+    return router_log(rlog).count("SSDP M-SEARCH answered")
+
+
+def upnp_gets(rlog):
+    """How many times the description has been fetched."""
+    return router_log(rlog).count("HTTP GET ")
+
+
+def portmap_settled(s, secs=20):
+    """PORTMAP re-read on an open sysop session until it says mapped.
+
+    A SETTLED state needs a settle window, and PORTMAP has an "asking" row
+    for exactly the moment this would otherwise read: the Router row says
+    "asking" and no Lease row is drawn while an exchange is in flight, so a
+    page read the instant after forcing a re-ask reports no mapping and is
+    right to. Bounded, and it returns the last page it saw either way, so a
+    board that never settles fails with the words it was actually showing.
+    """
+    text = ""
+    end = time.time() + secs
+    while True:
+        s.buf.clear()
+        s.send(b"portmap\r")
+        s.wait_for(b"Port map", 8)
+        s.pump(0.8)
+        text = plain(s.buf).decode(errors="replace")
+        if "mapped" in text.lower() or time.time() >= end:
+            return text
+        time.sleep(1.0)
+
+
+def test_portmap_upnp():
+    """UPnP IGD maps the port, in three stages (1.2.2-portmap.3).
+
+    The one protocol most consumer routers actually have, so a board that
+    stopped at PCP and NAT-PMP mostly reported "your router does not do
+    this". Each stage is asserted separately, because each has its own way
+    of going wrong: the search is answered, the description is fetched, and
+    the action is posted at the WAN service's control URL.
+
+    The last of those is the real check here. The stand-in's description
+    puts a Layer3Forwarding service, with a controlURL of its OWN, in FRONT
+    of the WAN one, exactly as the IGD template does, so a scan that keeps
+    the first control URL it sees posts its actions at a service that has no
+    AddPortMapping in it. "Never /ctl/L3F" is what says the scan reads the
+    service it is standing in rather than the first URL in the document."""
+    print("Port map: UPnP maps the port")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3923, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp)
+    ok = True
+    try:
+        ok &= check("PCP was dropped first",
+                    portmap_wait(rlog, "dropped a 60 byte request (version 2)", 25))
+        ok &= check("the SSDP search was answered",
+                    portmap_wait(rlog, "SSDP M-SEARCH answered", board_secs(25)))
+        ok &= check("the description was fetched",
+                    portmap_wait(rlog, "HTTP GET /rootDesc.xml", board_secs(25)))
+        ok &= check("and the action posted at the WAN service's control URL",
+                    portmap_wait(rlog, "HTTP POST /ctl/IPConn", board_secs(25)))
+        ok &= check("never at the Layer3Forwarding one in front of it",
+                    "/ctl/L3F" not in router_log(rlog))
+        ok &= check("the mapping was granted for the board's own port",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(25)))
+        ok &= check("and the outside address asked for separately",
+                    portmap_wait(rlog, "UPnP GetExternalIPAddress", board_secs(25)))
+        log = copy_log(tmp, "portmap: UPnP mapped port", board_secs(25))
+        ok &= check("the console names the service it found",
+                    "UPnP found WANIPConnection:1" in log)
+        ok &= check("and says the mapping was granted",
+                    "portmap: UPnP mapped port" in log)
+        s, text = portmap_page(port, "PmUpnp")
+        ok &= check("PORTMAP names UPnP", "UPnP" in text)
+        ok &= check("shows the outside address", "203.0.113.9" in text)
+        ok &= check("says mapped", "mapped" in text.lower())
+        ok &= check("never says reachable", "reachable" not in text.lower())
+        ok &= check("and carries a lease", "Lease" in text)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a UPnP mapping", ok)
+
+
+def test_portmap_upnp_third():
+    """UPnP is asked third, after PCP and NAT-PMP (1.2.2-portmap.3).
+
+    The ORDER, not just the arrival: PCP and NAT-PMP share one datagram
+    each, so reaching UPnP costs about 1.75 seconds and no caller notices,
+    and that is only true while the cheap two go first. A board that
+    searched SSDP before trying the gateway would pass every other test in
+    this section and put a multicast datagram on the LAN for a router that
+    would have answered PCP."""
+    print("Port map: UPnP comes third, after the two datagrams")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3924, PORT + 3938
+    tmp, bproc, rproc, rlog = upnp_board(port, udp)
+    ok = True
+    try:
+        ok &= check("the search was answered in the end",
+                    portmap_wait(rlog, "SSDP M-SEARCH answered", board_secs(30)))
+        log = router_log(rlog)
+        pcp = log.find("dropped a 60 byte request (version 2)")
+        pmp = log.find("dropped a 12 byte request (version 0)")
+        ssdp = log.find("SSDP M-SEARCH answered")
+        ok &= check(f"PCP went first ({pcp})", pcp >= 0)
+        ok &= check(f"then NAT-PMP ({pmp})", pmp > pcp)
+        ok &= check(f"and the SSDP search only after both ({ssdp})", ssdp > pmp)
+        s, text = portmap_page(port, "PmThird")
+        ok &= check("and the board settles on UPnP", "UPnP" in text)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("the protocol order", ok)
+
+
+def test_portmap_upnp_revorder():
+    """<controlURL> before <serviceType> in the same service (1.2.2-portmap.3).
+
+    The UPnP template does not do this and real devices do, and it is the
+    case a scan written as "remember the service type, then take the next
+    control URL" gets wrong: the URL has already gone past by the time the
+    type says the service is the right one. The scan has to hold both and
+    decide at the end of the element, which is what this proves."""
+    print("Port map: a control URL before its service type")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3925, PORT + 3942
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="revorder")
+    ok = True
+    try:
+        ok &= check("the mapping was still granted",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(30)))
+        ok &= check("at the WAN service's own control URL",
+                    "HTTP POST /ctl/IPConn" in router_log(rlog))
+        ok &= check("and never at the Layer3Forwarding one",
+                    "/ctl/L3F" not in router_log(rlog))
+        s, text = portmap_page(port, "PmRev")
+        ok &= check("PORTMAP says mapped", "mapped" in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("either order inside a service", ok)
+
+
+def test_portmap_upnp_nosvc():
+    """A description with no WAN connection service in it (1.2.2-portmap.3).
+
+    A real shape: a device that answers SSDP and describes itself and has no
+    port forwarding to offer. The board must read the whole description,
+    find nothing it can use, post NOTHING, and say so. Posting an action at
+    whatever control URL the document did carry is the failure this is
+    against."""
+    print("Port map: a description with no forwarding service")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3926, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="nosvc")
+    ok = True
+    try:
+        ok &= check("the description was fetched",
+                    portmap_wait(rlog, "HTTP GET /rootDesc.xml", board_secs(30)))
+        log = copy_log(tmp, "has no port-forwarding service", board_secs(25))
+        ok &= check("the console says there is no forwarding service in it",
+                    "has no port-forwarding service" in log)
+        ok &= check("no action was posted at all",
+                    "HTTP POST" not in router_log(rlog))
+        ok &= check("and nothing at the other services' control URLs",
+                    "/ctl/CommonIfCfg" not in router_log(rlog)
+                    and "/ctl/L3F" not in router_log(rlog))
+        s, text = portmap_page(port, "PmNoSvc")
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("no forwarding service", ok)
+
+
+def test_portmap_upnp_ctl_crlf():
+    """A control URL with a request line in it never reaches the router.
+
+    SECURITY (1.2.2-portmap.3, the code review, HIGH). The capture goes
+    straight into "POST %s HTTP/1.1\\r\\n", so one CR LF inside it lets the
+    description's author add a second request of their own choosing, sent
+    from the board's own trusted address on the LAN. The board must refuse
+    the WHOLE capture rather than cut it at the bad byte: a cut URL is a
+    404, which reads as "your router said no" for an hour.
+
+    "Nothing was mapped" cannot be the check, because that is what every
+    other failure here looks like too. The stand-in logs an injected header
+    or a second request line the moment one arrives, whatever the fault, so
+    the assertion is the ABSENCE of a thing that only the attack produces."""
+    print("Port map: a control URL carrying a second request")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3927, PORT + 3938
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="ctlcrlf")
+    ok = True
+    try:
+        ok &= check("the description was fetched",
+                    portmap_wait(rlog, "HTTP GET /rootDesc.xml", board_secs(30)))
+        log = copy_log(tmp, "control address this board will not use",
+                       board_secs(25))
+        ok &= check("the console says the control address will not be used",
+                    "control address this board will not use" in log)
+        rl = router_log(rlog)
+        ok &= check("no second request line reached the router",
+                    "SECOND request line" not in rl)
+        ok &= check("no injected header reached the router",
+                    "INJECTED header" not in rl)
+        ok &= check("the attacker's own path was never asked for",
+                    "/ctl/Evil" not in rl)
+        ok &= check("and no action was posted at all", "HTTP POST" not in rl)
+        s, text = portmap_page(port, "PmCrlf")
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a control URL with CR LF in it", ok)
+
+
+def test_portmap_upnp_location_stranger():
+    """A LOCATION that is not the gateway's is never even connected to.
+
+    SECURITY (1.2.2-portmap.3, the code review, HIGH). A PCP or NAT-PMP
+    reply carries no address the board then goes and contacts; an SSDP
+    reply's LOCATION is a redirect. UDP source addresses spoof, so without
+    a bound on the host, one datagram from anything on the LAN made the
+    board fetch a stranger's description, take their control URL, believe
+    their outside address, and publish their port to the directory as the
+    one callers should dial.
+
+    The check is a listener on the third host that counts accepts, because
+    the refusal has to be "no connection", not "a connection that came to
+    nothing": a board that fetched the document and then rejected it has
+    already told the attacker it is there and already spent the loop's time
+    on a stranger's bytes. The stand-in answers from 127.0.0.1, which on
+    the host IS the gateway, so only a LOCATION pointed elsewhere can tell
+    this guard from its absence."""
+    print("Port map: a LOCATION on a host that is not the gateway")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3928, PORT + 3942
+    http = udp + 2
+    # The stranger: 127.0.0.2 is loopback to the kernel and is NOT the
+    # gateway to the board, which is exactly the distinction being tested.
+    try:
+        decoy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        decoy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        decoy.bind(("127.0.0.2", http))
+        decoy.listen(8)
+        decoy.settimeout(0.25)
+    except OSError as e:
+        print(f"  SKIP  cannot bind 127.0.0.2:{http} ({e})")
+        return True
+    taken = []
+
+    def watch():
+        while True:
+            try:
+                conn, peer = decoy.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            taken.append(peer)
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    th = threading.Thread(target=watch, daemon=True)
+    th.start()
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="ctlelsewhere")
+    ok = True
+    try:
+        ok &= check("the board did send a search, and was answered",
+                    portmap_wait(rlog, "SSDP M-SEARCH answered", board_secs(30)))
+        ok &= check("with a LOCATION on the third host",
+                    "http://127.0.0.2:" in router_log(rlog))
+        # Through the whole give-up, so the refusal is not merely "it has
+        # not got round to it yet".
+        copy_log(tmp, "no PCP or NAT-PMP", board_secs(30))
+        ok &= check(f"no connection was ever made to the stranger ({len(taken)})",
+                    not taken)
+        ok &= check("and no description was fetched from the router either",
+                    "HTTP GET" not in router_log(rlog))
+        ok &= check("nothing was posted anywhere",
+                    "HTTP POST" not in router_log(rlog))
+        s, text = portmap_page(port, "PmElse")
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        ok &= check("and no outside address was taken from one",
+                    "203.0.113.9" not in text)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+        try:
+            decoy.close()
+        except OSError:
+            pass
+    return check("a stranger's LOCATION", ok)
+
+
+def test_portmap_upnp_location_name():
+    """A LOCATION naming a host rather than an address is refused.
+
+    Not resolved: that would be DNS on the loop, which is the one thing
+    Rule no. 1 forbids outright, and a router that cannot name itself by
+    address in its own SSDP reply is not one this will work with
+    (portmap.h). The check that matters is that nothing was fetched, with
+    no slow pass on the way to deciding it."""
+    print("Port map: a LOCATION naming a host, not an address")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3929, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="ctlname")
+    ok = True
+    try:
+        ok &= check("the search was answered",
+                    portmap_wait(rlog, "SSDP M-SEARCH answered", board_secs(30)))
+        ok &= check("with a LOCATION naming a host",
+                    "fakerouter.invalid" in router_log(rlog))
+        copy_log(tmp, "no PCP or NAT-PMP", board_secs(30))
+        ok &= check("no description was fetched", "HTTP GET" not in router_log(rlog))
+        slow = [l for l in copy_text(tmp).splitlines() if "slow pass" in l]
+        ok &= check(f"and no slow pass went into deciding that ({len(slow)})",
+                    not slow)
+        s, text = portmap_page(port, "PmName")
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a LOCATION with a name in it", ok)
+
+
+def test_portmap_upnp_ctl_absolute():
+    """An absolute control URL moves the host and the port with it.
+
+    The one legitimate case where the control service is not where the
+    description was, and the only one in which <URLBase>'s absence matters.
+    The stand-in puts it on a second HTTP port, so the proof is that the
+    POST arrives THERE: a board that kept the description's port would have
+    posted to a server that is not listening and reported a refusal."""
+    print("Port map: an absolute control URL on another port")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3930, PORT + 3938
+    ctl = udp + 3
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="ctlabs")
+    ok = True
+    try:
+        ok &= check("the description was fetched",
+                    portmap_wait(rlog, "HTTP GET /rootDesc.xml", board_secs(30)))
+        ok &= check("the mapping was granted",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(30)))
+        ok &= check(f"and the console says the control service is on {ctl}",
+                    f"WANIPConnection:1 at port {ctl}" in copy_text(tmp))
+        s, text = portmap_page(port, "PmAbs")
+        ok &= check("PORTMAP says mapped", "mapped" in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("an absolute control URL", ok)
+
+
+def test_portmap_upnp_ctl_long():
+    """The longest control URL the capture holds still fits the request.
+
+    95 characters, which is what found the request buffer four bytes short
+    in the first review: a URL one character too long for the buffer draws
+    a cut request line and a 404, which lands on "your router said no" for
+    an hour. The console says plainly when a request will not fit, so the
+    assertion is both that the line never appears and that the mapping was
+    actually granted at the long path."""
+    print("Port map: a 95 character control URL")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3923, PORT + 3942
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="ctllong")
+    ok = True
+    try:
+        ok &= check("the mapping was granted",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(30)))
+        long_path = "/" + ("c" * 87) + "/IPConn"
+        ok &= check(f"at the whole {len(long_path)} character path",
+                    f"HTTP POST {long_path} HTTP/1.1" in router_log(rlog))
+        ok &= check("and the board never said the request would not fit",
+                    "does not fit; not sent" not in copy_text(tmp))
+        s, text = portmap_page(port, "PmLong")
+        ok &= check("PORTMAP says mapped", "mapped" in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a long control URL", ok)
+
+
+def test_portmap_upnp_permanent():
+    """A router that will only make a mapping that never expires.
+
+    IGD error 725. Some firmware refuses any lease at all, and the right
+    answer is to ask for a permanent one rather than to report a failure,
+    because the mapping is the point. PORTMAP then shows the lease as
+    "none" with words rather than a figure: "0h00m" over a working mapping
+    is the confidently-wrong class that page exists to avoid."""
+    print("Port map: a router that only makes permanent mappings")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3924, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="perm")
+    ok = True
+    try:
+        ok &= check("the first ask carried a lease and was refused",
+                    portmap_wait(rlog, "UPnP AddPortMapping refused lease",
+                                 board_secs(30)))
+        ok &= check("the console says what the router will only do",
+                    "only make a mapping that never expires" in
+                    copy_log(tmp, "only make a mapping that never expires",
+                             board_secs(25)))
+        ok &= check("and the mapping was granted with no lease",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(30))
+                    and "lease 0" in router_log(rlog))
+        s, text = portmap_page(port, "PmPerm")
+        ok &= check("PORTMAP says mapped", "mapped" in text.lower())
+        # Matched against the ROW and not against the page: "none" is also
+        # what the Router row says when nothing answered at all, so a bare
+        # "none" in text would pass on a page that had no mapping on it.
+        ok &= check("the lease row is words, not a figure",
+                    bool(re.search(r"Lease\s+none", text)))
+        ok &= check("and no figure is shown for it", "0h00m" not in text)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a permanent-only router", ok)
+
+
+def test_portmap_upnp_taken():
+    """An outside number another host already holds: walk up (1.2.2-portmap.3).
+
+    IGD error 718 ConflictInMappingEntry, which is a router with one old
+    mapping left behind by another machine, not a refusal. The board asks
+    for the next number up, and whatever it gets is what announce must
+    publish: the port the board listens on is then the one number certainly
+    wrong."""
+    print("Port map: the outside number is taken, so try the next")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3925, PORT + 3938
+    tmp, bproc, rproc, rlog = upnp_board(
+        port, udp, fault="taken",
+        edits={("plugin:announce", "enabled"): "yes",
+               ("plugin:announce", "public_port"): ""})
+    ok = True
+    try:
+        ok &= check("the router said the first number is taken",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} is taken",
+                                 board_secs(30)))
+        ok &= check("the console says which number it tries next",
+                    f"taken; trying {port + 1}" in
+                    copy_log(tmp, f"taken; trying {port + 1}", board_secs(25)))
+        ok &= check("and the next one was granted",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port + 1} ->",
+                                 board_secs(30)))
+        s, on = copy_sysop("PmTaken", port)
+        ok &= check("elevated", on)
+        s.buf.clear()
+        s.send(b"announce test\r")
+        s.wait_for(b"software", 10)
+        s.pump(1.0)
+        body = plain(s.buf).decode(errors="replace").replace(" ", "")
+        ok &= check(f"announce publishes the granted number {port + 1}",
+                    f'"port":{port + 1}' in body)
+        ok &= check("and not the port the board listens on",
+                    f'"port":{port}' not in body)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a taken outside number", ok)
+
+
+def test_portmap_upnp_refused():
+    """A UPnP router that says no, with its own code (1.2.2-portmap.3).
+
+    606 Action not authorized is what a router with the feature switched
+    off in its menu answers, and it is a refusal rather than an absence: the
+    board must not re-discover, because a router that answered has answered,
+    and re-reading its description every minute would turn one refusal into
+    a three-stage round for ever."""
+    print("Port map: a UPnP router that says no")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3926, PORT + 3942
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="refuse")
+    ok = True
+    try:
+        ok &= check("the refusal is logged with its IGD code",
+                    f"UPnP refused port {port}, result 606" in
+                    copy_log(tmp, "UPnP refused port", board_secs(30)))
+        # A refusal must not cost a re-discovery: the search and the GET
+        # happened once each and stay at one.
+        searched, got = upnp_searches(rlog), upnp_gets(rlog)
+        time.sleep(5)
+        ok &= check(f"the description is not read again ({got} then {upnp_gets(rlog)})",
+                    upnp_gets(rlog) == got)
+        ok &= check(f"and no new search went out ({searched} then {upnp_searches(rlog)})",
+                    upnp_searches(rlog) == searched)
+        s, text = portmap_page(port, "PmURef")
+        ok &= check("PORTMAP says the router said no", "said no" in text)
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a refusing UPnP router", ok)
+
+
+def test_portmap_upnp_busy():
+    """729 ConflictWithOtherMechanisms is a refusal too (1.2.2-portmap.3).
+
+    A different code for a different evening: the router understood, and
+    something else on it owns the forwarding. Its own number has to reach
+    the console, because "your router said no" with no code behind it is
+    what makes a sysop's router menu a guessing game."""
+    print("Port map: a UPnP router that is busy")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3927, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="busy")
+    ok = True
+    try:
+        ok &= check("the refusal carries 729, not a generic failure",
+                    f"UPnP refused port {port}, result 729" in
+                    copy_log(tmp, "UPnP refused port", board_secs(30)))
+        s, text = portmap_page(port, "PmUBusy")
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a busy UPnP router", ok)
+
+
+def test_portmap_upnp_ppp():
+    """A WANPPPConnection router, and the SOAPACTION that follows it.
+
+    A PPP link's service is WANPPPConnection and a router that serves one
+    answers NOTHING to an action aimed at WANIPConnection, so the service
+    type has to come out of the description rather than out of a literal.
+    The stand-in checks the service type inside every SOAPACTION it
+    receives, and logs a mismatch, which is what makes this a test rather
+    than a coincidence."""
+    print("Port map: a PPP router's service type")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3928, PORT + 3938
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="ppp")
+    ok = True
+    try:
+        ok &= check("the console names the PPP service",
+                    "UPnP found WANPPPConnection:1" in
+                    copy_log(tmp, "UPnP found WANPPPConnection", board_secs(30)))
+        ok &= check("the mapping was granted",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(30)))
+        ok &= check("and the router never saw an action for the wrong service",
+                    "SOAPACTION names" not in router_log(rlog))
+        s, text = portmap_page(port, "PmPpp")
+        ok &= check("PORTMAP says mapped", "mapped" in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a PPP router", ok)
+
+
+def test_portmap_upnp_big_description():
+    """A 20 KB description is read across many ticks and still works.
+
+    The scan holds none of the document: it is fed the body 512 bytes a
+    pass, which is why a description far larger than any buffer here is
+    readable at all, and why miniupnpc's one-heap-block fetch was the
+    reason not to use it. The padding contains no tag the scan looks for,
+    so the only thing this exercises is a body that crosses many passes
+    and the match positions that have to survive each boundary."""
+    print("Port map: a 20 KB description")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3929, PORT + 3942
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="bigdesc")
+    ok = True
+    try:
+        ok &= check("the service was still found in it",
+                    "UPnP found WANIPConnection:1" in
+                    copy_log(tmp, "UPnP found WANIPConnection", board_secs(30)))
+        ok &= check("the mapping was granted",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(30)))
+        ok &= check("and the board never said the description ran away",
+                    "ran past" not in copy_text(tmp))
+        s, text = portmap_page(port, "PmBig")
+        ok &= check("PORTMAP says mapped", "mapped" in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a big description", ok)
+
+
+def test_portmap_upnp_huge_description():
+    """A description past the 64 KB cap is given up on (1.2.2-portmap.3).
+
+    The cap is what stops a device that streams for ever holding a socket
+    and a slot: the scan keeps no document, so without a bound on what it
+    has READ there is nothing to stop it. The OUTCOME is asserted rather
+    than the console line, on the stand-in's own advice: 64 KB is about 128
+    passes against an 8 second budget, so on a loaded lane the budget can
+    win the race and the give-up is for the other reason."""
+    print("Port map: a description that runs away")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3930, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="hugedesc")
+    ok = True
+    try:
+        ok &= check("the description was fetched",
+                    portmap_wait(rlog, "HTTP GET /rootDesc.xml", board_secs(30)))
+        copy_log(tmp, "no PCP or NAT-PMP", board_secs(35))
+        ok &= check("no action was ever posted",
+                    "HTTP POST" not in router_log(rlog))
+        s, text = portmap_page(port, "PmHuge")
+        ok &= check("nothing is claimed as mapped", "mapped" not in text.lower())
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("a runaway description", ok)
+
+
+def test_portmap_upnp_no_lag():
+    """Rule no. 1: a big UPnP exchange is never seen by a caller.
+
+    This is the protocol with the most to go wrong on the loop: a TCP
+    connect, a request written in pieces, and a body read across a hundred
+    passes, where PCP and NAT-PMP are one datagram each. Driven against a
+    20 KB description, which is the case that crosses the most passes, with
+    a caller typing the whole time. Deliberately not a runner job: the
+    runner is serial, so an exchange sitting on a connect would hold a
+    caller's FILES page and a photo prune behind it."""
+    print("Port map: no slow pass, with a 20 KB UPnP description")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3923, PORT + 3938
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="bigdesc")
+    ok = True
+    try:
+        s, on = copy_sysop("PmULag", port)
+        ok &= check("elevated", on)
+        # Through the whole three-stage exchange, with a caller on the board.
+        end = time.time() + 12
+        while time.time() < end:
+            s.send(b"time\r")
+            s.pump(0.4)
+        ok &= check("the exchange did happen",
+                    f"UPnP AddPortMapping {port} ->" in router_log(rlog))
+        slow = [l for l in copy_text(tmp).splitlines() if "slow pass" in l]
+        ok &= check(f"the console records no slow pass ({len(slow)})", not slow)
+        s.buf.clear()
+        s.send(b"sys\r")
+        s.wait_for(b"Slow passes", 10)
+        page_all(s, b"CALLS shows the board", 25)
+        m = re.search(r"Slow passes\s+(\d+)",
+                      plain(s.buf).decode(errors="replace"))
+        ok &= check(f"and SYS agrees ({m.group(1) if m else '?'})",
+                    bool(m) and int(m.group(1)) == 0)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("Rule no. 1 over UPnP", ok)
+
+
+def test_portmap_upnp_now_rediscovers():
+    """PORTMAP NOW reads the description again, mid-exchange or not.
+
+    REGRESSION (1.2.2-portmap.3, the code review's first pass: a
+    re-discovery landing mid-request). The one thing NOW is reached for is
+    a router whose menu has just been changed, so it must throw the control
+    URL away and search again; but it runs on the shell's pass, which is
+    above the in-flight guard, so consuming it inside an exchange would
+    rebuild a half-sent request from a URL that had gone. It is ARMED there
+    and consumed only between exchanges.
+
+    Driven against a 20 KB description so the exchange spans many passes
+    and a NOW really does land inside one, and typed several times over to
+    make that near certain."""
+    print("Port map: PORTMAP NOW re-discovers, even mid-exchange")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3924, PORT + 3942
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="bigdesc")
+    ok = True
+    try:
+        ok &= check("a mapping is held first",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(35)))
+        s, on = copy_sysop("PmUNow", port)
+        ok &= check("elevated", on)
+        searched, got = upnp_searches(rlog), upnp_gets(rlog)
+        maps = router_log(rlog).count("UPnP AddPortMapping")
+        # Several, spaced so that at least one lands while a description is
+        # being read: one NOW could sit entirely between two exchanges.
+        for _ in range(6):
+            s.buf.clear()
+            s.send(b"portmap now\r")
+            s.wait_for(b"Asking your router now", 8)
+            s.pump(0.4)
+        ok &= check(f"the search goes out again (had {searched})",
+                    portmap_count(rlog, "SSDP M-SEARCH answered", searched + 1,
+                                  board_secs(30)))
+        ok &= check(f"the description is read again (had {got})",
+                    portmap_count(rlog, "HTTP GET ", got + 1, board_secs(30)))
+        ok &= check(f"and a mapping is asked for again (had {maps})",
+                    portmap_count(rlog, "UPnP AddPortMapping", maps + 1,
+                                  board_secs(30)))
+        # The board is unharmed by a NOW that landed inside an exchange: no
+        # half-built request was sent, and it still holds a mapping.
+        ok &= check("no request was abandoned as not fitting",
+                    "does not fit; not sent" not in copy_text(tmp))
+        # Read on the session already open, and given a window: six forced
+        # re-asks in a row leave the board part way through the SIXTH
+        # exchange, where PORTMAP's Router row correctly says "asking" and
+        # draws no Lease at all. The first version of this read the page
+        # the instant the last NOW was acknowledged and failed on a board
+        # that was behaving exactly as designed.
+        text = portmap_settled(s, board_secs(30))
+        ok &= check("and PORTMAP settles back to mapped", "mapped" in text.lower())
+        ok &= check("over UPnP", "UPnP" in text)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("NOW and re-discovery", ok)
+
+
+def test_portmap_upnp_giveback():
+    """Switching it off hands the mapping back on the URL it was made on.
+
+    REGRESSION (1.2.2-portmap.3, the code review's second pass). A CONFIG
+    save calls askNow, which arms the re-discovery, and consuming that on
+    the way OUT threw away the control URL the mapping was granted on: the
+    DeletePortMapping then had to complete a whole fresh search and
+    description fetch inside the 8 second budget before it could even be
+    sent. On a router that only makes permanent mappings that give-back is
+    the only thing standing between a sysop and a hole left open for good,
+    so it is run here on exactly that router.
+
+    The assertion is both halves: a delete arrived, and NO new search went
+    out to get it there."""
+    print("Port map: switching it off gives a permanent mapping back")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3925, PORT + 3934
+    tmp, bproc, rproc, rlog = upnp_board(port, udp, fault="perm")
+    ok = True
+    try:
+        ok &= check("a permanent mapping is held",
+                    portmap_wait(rlog, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(35)))
+        s, on = copy_sysop("PmUOff", port)
+        ok &= check("elevated", on)
+        time.sleep(2)                              # let the round settle
+        searched = upnp_searches(rlog)
+        s.buf.clear()
+        s.send(b"config network\r")
+        s.wait_for(b"NETWORK", 8)
+        s.pump(0.8)
+        ok &= check("the setting row is reachable by its own note",
+                    cfg_walk_to(s, b"router to forward"))
+        s.send(b" ")                               # a yes/no row cycles on space
+        s.pump(0.5)
+        s.send(F1)
+        v = cfg_verdict(s, [b"Saved and live", b"Saved"], 10)
+        ok &= check(f"saving that row alone is live ({v})", v == b"Saved and live")
+        ok &= check("the console says it is giving the mapping back",
+                    "giving back what the router granted" in
+                    copy_log(tmp, "giving back what the router granted",
+                             board_secs(20)))
+        ok &= check("and the delete reaches the router",
+                    portmap_wait(rlog, f"UPnP DeletePortMapping {port}",
+                                 board_secs(30)))
+        ok &= check(f"on the URL it already had, with no new search ({searched})",
+                    upnp_searches(rlog) == searched)
+        s.close()
+    finally:
+        router_stop(rproc, rlog)
+        stop_copy(bproc, tmp)
+    return check("the UPnP give-back", ok)
+
+
+def test_portmap_upnp_router_swapped():
+    """A NAT-PMP router replaced by a UPnP one is found again.
+
+    REGRESSION (1.2.2-portmap.3, the code review, MEDIUM). A board settled
+    on NAT-PMP kept asking NAT-PMP for ever, said "your router does not do
+    this", and could only be recovered by switching the setting off and on,
+    which nothing told the sysop. Nothing is held once the lease has run
+    out, so there is nothing to lose by asking the whole question again from
+    the top, and that is what the board does now.
+
+    The lease is 20 seconds on purpose: at the default 7200 the renewal
+    falls due in an hour and no test could ever see this. The mapping is
+    granted over NAT-PMP, the router is then swapped for a UPnP-only one on
+    the same three ports, the lease runs out unrenewed, and the walk starts
+    again at PCP and reaches UPnP."""
+    print("Port map: a NAT-PMP router swapped for a UPnP one")
+    if HOST not in ("127.0.0.1", "localhost") or not PASSWORD:
+        print("  SKIP  needs the host build and the sysop")
+        return True
+    port, udp = PORT + 3926, PORT + 3938
+    # proto natpmp to start with, and the SSDP port named anyway: the board
+    # reads BBS_HOST_SSDP once at start-up, so the UPnP router that arrives
+    # later has to land on a port the board was already told about.
+    tmp, bproc, rproc, rlog = portmap_board(
+        port, udp, proto="natpmp", ssdp=udp + 1, http=udp + 2,
+        extra=("--max-life", "20"))
+    rproc2 = rlog2 = None
+    ok = True
+    try:
+        ok &= check("NAT-PMP granted a mapping first",
+                    portmap_wait(rlog, "NAT-PMP map port", board_secs(30)))
+        s, text = portmap_page(port, "PmSwap")
+        ok &= check("and PORTMAP names NAT-PMP", "NAT-PMP" in text)
+        s.close()
+        # The swap. Same ports, a different router behind them.
+        router_stop(rproc, rlog)
+        rproc = None
+        rproc2, rlog2 = router_start(udp, "upnp", "none", (),
+                                     ssdp=udp + 1, http=udp + 2)
+        # The waits are long because the board's own clock says so, and the
+        # arithmetic is worth writing down: the failed renewal sets a
+        # kSoonMs (60 board-second) wait, the 20 second lease runs out
+        # inside it, and only the ask AFTER that wait finds nothing held,
+        # resets the settled protocol and walks PCP, NAT-PMP and then UPnP
+        # at about 1.75 board-seconds each. So the search cannot arrive
+        # before roughly 65 board-seconds after the swap however patient
+        # the test is. board_secs(60) was the first guess and failed with
+        # the recovery about one wall second away.
+        ok &= check("the new router answers an SSDP search",
+                    portmap_wait(rlog2, "SSDP M-SEARCH answered", board_secs(180)))
+        ok &= check("and grants the mapping over UPnP",
+                    portmap_wait(rlog2, f"UPnP AddPortMapping {port} ->",
+                                 board_secs(120)))
+        s, on = copy_sysop("PmSwap2", port)
+        ok &= check("elevated", on)
+        text = portmap_settled(s, board_secs(60))
+        ok &= check("PORTMAP now names UPnP", "UPnP" in text)
+        ok &= check("and says mapped", "mapped" in text.lower())
+        s.close()
+    finally:
+        if rproc is not None:
+            router_stop(rproc, rlog)
+        if rproc2 is not None:
+            router_stop(rproc2, rlog2)
+        stop_copy(bproc, tmp)
+    return check("a swapped router", ok)
 
 
 def test_config_announce_outside():
@@ -21046,6 +22042,22 @@ ORDER_NAMES = [
     "test_portmap_renew", "test_portmap_reboot", "test_portmap_toggle",
     "test_portmap_now", "test_portmap_ssh_and_backup", "test_portmap_rows",
     "test_portmap_rows_narrow", "test_portmap_no_lag",
+    # UPnP IGD (1.2.2-portmap.3), the third protocol. Each one runs a
+    # stand-in UPnP router and a board copy of its own; the two
+    # security tests (upnp_ctl_crlf, upnp_location_stranger) are the
+    # ones to keep an eye on, because each asserts the ABSENCE of
+    # something only an attack produces.
+    "test_portmap_upnp", "test_portmap_upnp_third",
+    "test_portmap_upnp_revorder", "test_portmap_upnp_nosvc",
+    "test_portmap_upnp_ctl_crlf", "test_portmap_upnp_location_stranger",
+    "test_portmap_upnp_location_name", "test_portmap_upnp_ctl_absolute",
+    "test_portmap_upnp_ctl_long", "test_portmap_upnp_permanent",
+    "test_portmap_upnp_taken", "test_portmap_upnp_refused",
+    "test_portmap_upnp_busy", "test_portmap_upnp_ppp",
+    "test_portmap_upnp_big_description",
+    "test_portmap_upnp_huge_description", "test_portmap_upnp_no_lag",
+    "test_portmap_upnp_now_rediscovers", "test_portmap_upnp_giveback",
+    "test_portmap_upnp_router_swapped",
     "test_config_wifi_fallback", "test_boot_hold",
     "test_boot_hold_write_fails", "test_boot_hold_factory_fails", "test_sysop_spelled_default",
     "test_boot_notices", "test_dash_opens_nothing",

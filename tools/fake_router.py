@@ -637,6 +637,23 @@ class Router(object):
                 if not chunk:
                     break
                 rest += chunk
+            # The witness for the ctlcrlf fault, and it has to be here
+            # rather than in the test: what a test can see from outside is
+            # only that no POST arrived, which is also what "the board gave
+            # up for some other reason" looks like. A header or a request
+            # line the fault's own control URL carried, arriving at all, is
+            # positive proof the injection went through, so a test can
+            # assert its ABSENCE and mean something. Logged whatever the
+            # fault, so the day a different path lets one through it is
+            # still seen.
+            if "X-INJECTED" in head.upper():
+                log("HTTP request carried an INJECTED header: %s" % first)
+            for line in head.split("\r\n")[1:] + rest.decode("latin-1").split("\r\n"):
+                up = line.upper()
+                if (up.startswith(("GET ", "POST ", "HEAD ", "PUT "))
+                        and "HTTP/1." in up):
+                    log("HTTP request carried a SECOND request line: %s" % line)
+                    break
             if self.gone_deaf():
                 log("HTTP %r while deaf" % first)
                 return

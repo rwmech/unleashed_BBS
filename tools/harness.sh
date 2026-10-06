@@ -122,7 +122,11 @@
 #                              needs the stand-in's --ssdp-port and
 #                              --http-port given explicitly and the board
 #                              pointed at the first with BBS_HOST_SSDP;
-#                              portmap_board does both
+#                              portmap_board does both, and upnp_board
+#                              derives all three from ONE "PORT + N" offset
+#                              (udp, udp+1 SSDP, udp+2 HTTP, udp+3 for the
+#                              ctlabs fault), which is the run of four
+#                              parallel.py reserves for every such offset
 #
 #                 tools/harness.sh --tag m --card --only=messaging
 #                 tools/harness.sh --tag m --card --only=forums,sysinfo

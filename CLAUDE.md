@@ -2489,6 +2489,123 @@ this tree.
     separate it from the thing under test, however many samples it has.**
     More samples do not fix it and make it look stronger; moving both
     readings inside one session does.
+- **The port-mapping tests run, and twenty of them are new (2026-10-06,
+  Rob's go).** 1.2.2-portmap.2 wrote eighteen and never ran them against the
+  tree that followed; 1.2.2-portmap.3 shipped UPnP saying in its own commit
+  message "no host test covers it yet". Both are answered. Test-side
+  changes only: no `src/` change, no version bump. What it settled:
+  - **A bound written as arithmetic has to be re-derived when the arithmetic
+    changes.** `test_portmap_deaf` asserted "a round is a handful of
+    datagrams, not a storm" at `<= 8`, which was `kTries` (3) times two
+    protocols with headroom. UPnP made a round three protocols and nine
+    datagrams, so the only failing check in the whole group was the test's.
+    It is `<= 9` now and named as kTries a protocol times three,
+    deliberately exact rather than given headroom, so a fourth protocol
+    fails here loudly instead of passing under a bound nobody revisits.
+  - **The string waited for and the string checked have to be the same
+    one.** The same commit reworded "answered neither PCP nor NAT-PMP" to
+    "no PCP or NAT-PMP" and moved only the `in` check, leaving
+    `test_portmap_stranger` waiting its full 25 seconds for a line that can
+    no longer appear and then passing on whatever the log had collected by
+    then. It passed for the wrong reason and cost 25 of its 45 seconds.
+  - **An absence test needs a witness the attack itself produces**, and
+    both security tests were proved by taking the guards out and
+    rebuilding. Neither can assert "nothing was mapped", because that is
+    what every other UPnP failure looks like as well. So
+    `tools/fake_router.py` logs an injected header or a second request line
+    the moment one arrives, whatever the fault, and
+    `test_portmap_upnp_ctl_crlf` asserts the absence of a thing only the
+    injection makes; `test_portmap_upnp_location_stranger` binds a listener
+    on 127.0.0.2 and counts accepts, because the refusal has to be "no
+    connection", not "a connection that came to nothing".
+  - **A UPnP test derives three ports from one offset**, which is exactly
+    what `parallel.py`'s `port_offsets` is for: it takes every `PORT + N` as
+    a run of four, so udp, udp + 1 for SSDP, udp + 2 for the description
+    and SOAP, and udp + 3 for the ctlabs fault's second HTTP server are all
+    reserved by naming one. `portmap_board`'s warning that a defaulted SSDP
+    port lands on the next test's router is arithmetic now rather than
+    advice.
+  - **The cost of a test's port offset is not the port, it is the hole it
+    digs in the packing**, and this is the one measured lesson of the
+    session. Twenty bases of their own, stepping by four, made offsets
+    3964..4067 a contiguous reserved run; two lanes collide when their
+    bases differ by ANY difference between two offsets, so a contiguous run
+    of 104 forbids every base gap under 104. The harness said it plainly on
+    the first `--jobs 12` run, "9 workers fit in a port block", where the
+    same block had held 17 before, and the maximum offset had not moved at
+    all: **the span was never the variable, the density was.** Three shared
+    bases in the free 3934..3942 window, with the board ports the eighteen
+    older tests already share, put it back to 16. Sharing is safe for the
+    reason those older tests share: parallel.py runs one lane at a time per
+    worker, so no two tests in this file are ever bound at once.
+  - **A count read after the event it means to measure is not a baseline.**
+    `test_portmap_toggle` read its "dropped a" count AFTER the CONFIG save
+    that triggers the give-back, so when the board's next tick beat the
+    test to the log the baseline already included the datagram and
+    `before + 1` never came: the test asserted the give-back had not
+    happened yet. It passed every serial run and failed in BOTH parallel
+    lanes of the first `--jobs` run it had ever been in. Pre-existing, from
+    1.2.2-portmap.2, and the baseline is read before the save now.
+    **Fixing it uncovered a second defect in the same test, and that one
+    needed a different profile to see**: the give-back is one request a
+    MAPPING, so on a board that binds an SSH port there are two of them a
+    tick apart, and the "and then stops asking" check started timing its
+    five seconds of silence from the first. The second datagram landed
+    inside the window and read as "still asking" (250 bytes then 301), the
+    first time the portmap group had ever been run under `--board s3`. It
+    waits for the give-back to go quiet before timing the silence now.
+    **Both halves of this test were measuring from the wrong instant**, and
+    neither could be seen from the reference board run serially, which is
+    the only way it had ever been run.
+  - **`--board s3 --only=portmap` is how the backup port's assertion gets
+    tested at all**, and it had never been run: `test_portmap_ssh_and_backup`
+    SKIPs on the reference profile, the profile lanes of a `--jobs` run do
+    not include the portmap group, so the one check in this feature that is
+    purely about safety ("the backup window's port is never asked for")
+    was in nobody's run. It passes: 231 checks, 38 tests, no SKIPs, the
+    backup port named from the copy's own config.
+  - **The Layer3Forwarding trap is real and the scan survives it.** The
+    stand-in's description puts a Layer3Forwarding service with a controlURL
+    of its own in front of the WAN one, as the IGD template does. "The
+    action was posted at /ctl/IPConn" and "never at /ctl/L3F" are asserted
+    together, because either alone passes on a board that posted nothing.
+    The `revorder` fault, controlURL before serviceType inside the WAN
+    element, is its own test: that is where a scan written as "remember the
+    type, then take the next URL" fails, and it passes.
+  - **A settled state needs a settle window, and two of the new tests had
+    to learn it.** `test_portmap_upnp_now_rediscovers` read PORTMAP the
+    instant the sixth forced re-ask was acknowledged and failed on a board
+    behaving exactly as designed: the Router row says "asking" and no Lease
+    is drawn while an exchange is in flight. `portmap_settled` re-reads the
+    page on the open session until it says mapped, bounded, returning the
+    last page it saw either way. And `test_portmap_upnp_router_swapped`
+    waited 60 board-seconds for a recovery that cannot arrive before about
+    65: the failed renewal sets a kSoonMs wait, the 20 second lease runs
+    out inside it, and only the ask after that wait finds nothing held,
+    resets the settled protocol and walks the three. The firmware's
+    recovery was right both times; the clock in the test was not.
+  - **Three findings for the next portmap batch, none of them a test
+    failure.** PORTMAP's words do not tell "the router does not speak this"
+    apart from "its description is unusable": a description with no WAN
+    service, a refused control URL and a runaway description all land on
+    `Why::NoAnswer`, so the console says precisely which and the sysop's
+    page says the same sentence for all four, which portmap.h's own Honest
+    rule wanted kept apart. IGD 729 ConflictWithOtherMechanisms maps to
+    `Why::GatewayBusy`, whose short sentence is "your router has no address
+    of its own", and a 729 is neither that nor out of room. And
+    `changed_groups.py` has no mapping for `src/core/portmap.*` or
+    `src/platform/platform.h`, so `--changed` over this branch falls back to
+    the whole suite where `portmap, shell, login` is the honest set.
+  - **The runs, for the record.** `make test` 1,293 + 162, no warnings. The
+    eighteen older tests 94 checks with one real failure, the datagram
+    bound. The twenty new ones 125 then 113 green. The whole suite, which
+    is what `--changed` over this branch resolves to, 6,272 checks in 20
+    minutes at `--jobs 12` (9 workers), 2 failed, both the toggle. The
+    portmap group in lanes afterwards, 227 with a card and 227 without, all
+    green. The S3 profile 231, 38 tests, no SKIPs. One pre-existing host
+    warning, not this branch's: `-Wformat-truncation` on bbs_sysop.cpp:2238,
+    the G4848's shared-pin message, from 1.2.1-dev.14, invisible to
+    `make test` because that target never builds bbs_host.
 - **Ten SSH lines: eight today, and raising it is arithmetic** (Rob,
   2026-10-05: "we can also do a full 10 lines ssh right?"). Queued for
   1.2.2. `BBS_SSH_MAX` is 8 in all seven S3 profiles (`src/board.h`), and
