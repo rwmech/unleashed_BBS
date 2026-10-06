@@ -2538,16 +2538,44 @@ this tree.
     matches the address, so nothing depends on call order; and an address of
     0 is no longer matched as an existing entry, which matters because the
     branch next door is designing caller lines with no address.
-  - **Open for Rob, recorded in `guard.h`:** `BanList::fail` returns false
-    when the table is full, so a ninth address's wrong staff passwords are
-    never counted and never show in BANS, where `LoginGuard::fail` twenty
-    lines below answers the identical question with "treat as locked: hang
-    this call up". Not a worse guess rate than before the fix (the old
-    eviction let addresses rotate indefinitely), but less visibility. The
-    two candidates are `return true` there, which makes two existing log
-    lines say "banned" about a ban never recorded, or a `countable()` the
-    staff-password check consults with local exempt, which is the shape of
-    "no staff elevation from the web".
+  - **SETTLED, and it is a 1.2.2 item: the staff password gets a counter
+    that cannot be exhausted** (Rob, 2026-10-06, choosing it over three
+    cheaper options). `BanList::fail` returns false when the table is full,
+    and that table is **the only thing counting wrong staff passwords**,
+    because a wrong `BYE <password>` is otherwise a plain logoff that counts
+    nothing else. So filling all eight slots with live bans switches the
+    counting off for everybody else: **eight addresses an attacker controls
+    earn bans at three wrong logins each, and a ninth then guesses the sysop
+    password with nothing counting**, one try per connection, on any board
+    in the directory. The keys to the board, at whatever rate the attacker
+    can open connections.
+    - **Not a regression** (the parent let them lift a live ban, which is
+      worse) and not a merge blocker, which is why it is a 1.2.2 item rather
+      than a hotfix. Found by the SSH lane's test agent reading the code,
+      not by a test.
+    - **It is the premise of a rule already in this file.** "No staff
+      elevation from the web, at all" is justified here by the staff
+      password's only rate limit being three wrong in fifteen minutes. That
+      premise was not holding for *any* caller, so the fix is owed
+      regardless of browser SSH, which is not built.
+    - **Rejected, with reasons, so they are not re-proposed:** `return true`
+      from `fail()` (the candidate `guard.h` recorded) hangs the call up but
+      **restores no counting**, so the guess rate is unchanged and two log
+      lines would say "banned" about a ban never recorded; more
+      `BBS_BAN_SLOTS` makes it costlier without closing it and spends static
+      DRAM on the ESP32-CAM floor; refusing staff elevation while the table
+      is full fails shut in the right direction but lets an attacker lock
+      the sysop out of elevating remotely by filling it.
+    - **The design question it raises, and whoever builds it must answer it:
+      a counter that cannot be exhausted has to say what happens when IT
+      fills.** A per-address table has the same hole one level up. The shape
+      proposed is per-address counting for the ordinary case, falling back
+      to one **global** counter when the per-address table is full, so the
+      rate stays bounded with no table to exhaust; local addresses exempt,
+      the project's own idiom. The global fallback is a deliberate trade:
+      an attacker can slow the sysop's own remote elevation, but cannot
+      remove the limit. Have the code review challenge that before it is
+      built rather than after.
 - **Ten SSH lines, and a setting that lowers it: built on `ssh-lines`
   (1.2.2-dev.1, 2026-10-05), code-reviewed, not tested.** Rob: "we can also
   do a full 10 lines ssh right?", then, told eight was a judgement rather
