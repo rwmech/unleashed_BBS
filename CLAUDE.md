@@ -2118,16 +2118,25 @@ this tree.
 
 - **1.2.2 rescoped by Rob, 2026-10-06.** What stays, what moves, and one
   new item.
-  - **In 1.2.2:** ten SSH lines with `ssh_lines`; the two ban fixes (the
+  - **In 1.2.2, final (Rob trimmed it twice on 2026-10-06, all five items
+    now built):** ten SSH lines with `ssh_lines`; the two ban fixes (the
     fail-open table and the 24.86-day resurrection); port mapping with all
-    three protocols, proven on a real router; **`ssh_port` in announce**, so
-    the directory's padlock can appear at all; the **32-hex token refusal**
-    (the bug that queued HQ); **plugin on/off in CONFIG's page list**;
-    **every line addressable by its number** (`/p0` for the sysop and `/p11`
-    for the busy line, the entry below the 1.2.3 block); and **`PORTMAP
-    TEST`**, below.
+    three protocols, proven on a real router; **every line addressable by
+    its number** (`/p0` for the sysop and `/p11` for the busy line); and
+    **plugin on/off in CONFIG's page list**.
   - **Moved to 1.3:** themes, the hamburger menu on touch panels, the 4.3B
-    panel alignment pass.
+    panel alignment pass, and three taken out of 1.2.2 on 2026-10-06:
+    - **the staff-password counter that cannot be exhausted.** The hole is
+      real and the entry above stands; what moved is when. It is not a
+      regression, and the release was already short.
+    - **`ssh_port` in announce.** The consequence to know: the directory's
+      padlock shipped on the site side at 2.0.16 and **cannot appear on any
+      listing until this ships**. Nothing breaks; it simply shows nothing.
+    - **the 32-hex token refusal.** Rob, 2026-10-06: "its working now" - HQ's
+      listing updates again, so this is a guard against the next bad paste
+      rather than a fix for a live fault. Worth keeping queued: it is the
+      third token bug of this shape, and the lesson is to validate a length
+      where it is typed rather than where it is used.
   - **Moved out of any version:** the screen redesign. Specified in
     `internal/screens-copy-2026-10-01.md` and
     `internal/screens-style-2026-10-01.md`, and nobody has drawn anything.

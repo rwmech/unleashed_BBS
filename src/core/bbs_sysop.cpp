@@ -2668,13 +2668,40 @@ void Bbs::configPages(Session& s) {
         // it is off, because its page is where it is switched on.
         if (!strcmp(plugins::at(i)->info.name, "camsat") && plugins::running(i)) continue;
         uint8_t col = 0;
-        snprintf(buf, sizeof(buf), " %-10.10s", plugins::at(i)->info.name);
-        rowSeg(s, Color::Yellow, buf, col);
+        // Three states, not two, and the third is the one a sysop most
+        // needs: enabled in the file but NOT running means this board
+        // cannot run it (a PF_SD plugin with no card is the usual case).
+        // Shown as "off" it would teach the wrong thing entirely - that
+        // switching it on is all that is wanted.
+        //
+        // The mark goes in the space the name column already had in front
+        // of it, so no row gets wider and the 40 column clip is untouched.
+        // A character rather than colour alone, because plain ASCII has
+        // neither colour nor reverse video: the same reason numbers work
+        // beside cursor keys everywhere here.
+        const bool on  = plugins::enabled(i);
+        const bool run = plugins::running(i);
+        const char mark = run ? ' ' : (on ? '!' : '-');
+        snprintf(buf, sizeof(buf), "%c%-10.10s", mark, plugins::at(i)->info.name);
+        rowSeg(s, run ? Color::Yellow : Color::DarkGrey, buf, col);
         snprintf(buf, sizeof(buf), "plugin: %.24s", plugins::at(i)->info.title);
         rowSeg(s, Color::Grey, clip(buf, col), col);
         rowEnd(s, col);
     }
     rowRule(s);
+    // Only when there is something to explain: a board with everything
+    // running should not carry a key to marks nobody can see.
+    bool anyOff = false, anyStuck = false;
+    for (uint8_t i = 0; i < plugins::count(); ++i) {
+        if (plugins::running(i)) continue;
+        if (plugins::enabled(i)) anyStuck = true; else anyOff = true;
+    }
+    if (anyOff || anyStuck) {
+        const char* key = anyOff && anyStuck ? "- switched off   ! on, but this board cannot run it"
+                        : anyOff             ? "- switched off"
+                                             : "! on, but this board cannot run it";
+        rowText(s, Color::DarkGrey, key);
+    }
     rowText(s, Color::DarkGrey, "F1 saves a page, left arrow leaves it");
     prompt(s);
 }
