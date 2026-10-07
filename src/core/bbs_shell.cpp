@@ -49,6 +49,7 @@
 #include "silent.h"
 #include "space.h"            // the kept free-space figures (1.1.2)
 #include "runner.h"           // the background runner (1.1.2)
+#include "portmap.h"          // SYS's "Port map" row (1.2.2)
 #include "../platform/platform.h"
 #ifdef BBS_HAS_ETH
 #include "netfallback.h"      // kBuiltinWifi: SYS's Wi-Fi row on the wire (1.2.1)
@@ -337,6 +338,15 @@ const Command* Bbs::coreCommands(uint8_t& count) {
         { "CONFIG", "", 0, CF_SYSOP, "CONFIG [p]", "board settings, page by page",
           [](Bbs& b, Session& s, const char* a, uint32_t n) { b.cmdConfig(s, a, n); },
           Menu::Sysop, 3 },
+        // What the router was asked to forward and what it did (1.2.2).
+        // Sysop, like CONFIG: the setting is a sysop's, the page names the
+        // board's outside address, and the thing to do about a failure is
+        // always in somebody's router.
+        { "PORTMAP", "", 0, CF_SYSOP, "PORTMAP", "what your router forwards",
+          [](Bbs& b, Session& s, const char* a, uint32_t) { b.cmdPortmap(s, a); },
+          Menu::Sysop, 43 },
+        { "PORTMAP", "", 0, CF_SYSOP | CF_HELPONLY, "PORTMAP NOW", "ask your router again", nullptr,
+          Menu::Sysop, 44 },
         { "PLUGINS", "", 0, CF_STAFF, "PLUGINS", "plugins and their state",
           [](Bbs& b, Session& s, const char*, uint32_t) { b.startList(s, ListKind::Plugins); },
           Menu::Sysop, 2 },
@@ -2742,7 +2752,7 @@ bool Bbs::rowSys(Session& s) {
     // rows (bbs_hardware.cpp), as many lines as the width makes them, less
     // the heap rows "memory" already has. When hwRow is done, i jumps to
     // the rule and the footer.
-    constexpr uint8_t kSysHw = 33, kSysTail = 200;
+    constexpr uint8_t kSysHw = 34, kSysTail = 200;
     if (i > kSysHw && i < kSysTail) {
         if (hwRow(s, static_cast<uint8_t>(i - kSysHw - 1), true)) return true;
         i = kSysTail;
@@ -2878,28 +2888,75 @@ bool Bbs::rowSys(Session& s) {
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(port()));
             statRow(s, "Port", num, Color::LightGreen, syscfg::get().hostname);
             return true;
+        // What the router was asked to forward and what it did (1.2.2),
+        // last in the network section, beside the address and the port it
+        // is about. One line here and the whole story in PORTMAP, because a
+        // sysop whose board nobody can reach looks at SYS first and should
+        // not have to know a command exists to find out why.
+        //
+        // "Mapped", never "reachable": see core/portmap.h.
+        case 8: {
+            const portmap::Status pm = portmap::status();
+            // "unmapped" and not "no", which is what this said until
+            // 1.2.2-portmap.3: with the setting ON and nothing mapped the
+            // row read "Port map  no", which is exactly how it reads when
+            // the setting is off, and a sysop checking whether they had
+            // switched it on could not tell from the row that answers that
+            // question. The reason is in the note beside it either way.
+            // Eight characters, inside the 9 the value column holds.
+            // "no addr" comes before "mapped" on purpose: a router that
+            // granted a mapping while having no outside address of its own
+            // is held with external == 0, and this row used to call that
+            // "mapped" while PORTMAP called it "your router has no address
+            // of its own" (the code review's second pass). Seven
+            // characters, inside the 9 the value column holds.
+            const char* word = !pm.on                  ? "off"
+                             : pm.held && !pm.external ? "no addr"
+                             : pm.held && pm.carrier   ? "carrier"
+                             : pm.held                 ? "mapped"
+                             : pm.asking               ? "asking"
+                                                       : "unmapped";
+            // Its own buffer: portmap::line's wide form runs to 55, where
+            // this function's shared buf is 48 and would have cut the "as
+            // of" off the end without saying so.
+            char pm2[64];
+            portmap::line(pm2, sizeof(pm2), rowWidth(s) >= 60);
+            // statRow never cuts, so a note that would wrap the row is left
+            // off instead, as the Wi-Fi row above does with a long network
+            // name. The width is derived the same way it is there rather
+            // than from the longest word this row happens to use today.
+            const size_t wl   = strlen(word);
+            const size_t used = 13 + (wl > 9 ? wl : 9) + 1 + strlen(pm2);
+            statRow(s, "Port map", word,
+                    !pm.on                   ? Color::Grey
+                    : pm.held && !pm.carrier ? Color::LightGreen
+                    : pm.held                ? Color::LightRed
+                                             : Color::Yellow,
+                    used <= rowWidth(s) ? pm2 : nullptr);
+            return true;
+        }
 
-        case 8:  rowSection(s, "memory"); return true;
-        case 9:
+        case 9:  rowSection(s, "memory"); return true;
+        case 10:
             if (h.heapFree) statNum(s, "Heap free", h.heapFree, "bytes");
             else            statRow(s, "Heap free", "-", Color::DarkGrey, "host build");
             return true;
-        case 10:
+        case 11:
             if (h.heapFree) statNum(s, "Heap low", h.heapLow, "since boot");
             else            statRow(s, "Heap low", "-", Color::DarkGrey);
             return true;
-        case 11:
+        case 12:
             if (h.heapFull) statNum(s, "Biggest blk", h.heapBig, "bytes");
             else            statRow(s, "Biggest blk", "-", Color::DarkGrey);
             return true;
-        case 12:
+        case 13:
             fmtCommas(static_cast<uint32_t>(sizeof(Session)), num, sizeof(num));
             snprintf(buf, sizeof(buf), "x %u sessions", static_cast<unsigned>(kSessions));
             statRow(s, "Session", num, Color::LightGreen, buf);
             return true;
 
-        case 13: rowSection(s, "storage"); return true;
-        case 14: {
+        case 14: rowSection(s, "storage"); return true;
+        case 15: {
             // The screens partition, kept (core/space.h, 1.1.2).
             const space::Fig f = space::get(plat::PART_SCREENS);
             char tot[16];
@@ -2908,18 +2965,18 @@ bool Bbs::rowSys(Session& s) {
             statKept(s, "Data used", f.valid, static_cast<uint32_t>(f.used), f.valid ? buf : nullptr);
             return true;
         }
-        case 15: statKept(s, "Data free", h.dataKnown, h.dataFree, "bytes"); return true;
-        case 16:
+        case 16: statKept(s, "Data free", h.dataKnown, h.dataFree, "bytes"); return true;
+        case 17:
             statNum(s, "Held back", plugins::reserveBytes(), "for the board");
             keptNote(s, "SYS FORCE");
             return true;
 
-        case 17: rowSection(s, "load"); return true;
-        case 18:
+        case 18: rowSection(s, "load"); return true;
+        case 19:
             fmtUptime(buf, sizeof(buf), plat::millis());
             statRow(s, "Uptime", buf, Color::White);
             return true;
-        case 19:
+        case 20:
             // An uptime that keeps starting over is the only symptom of a
             // board that restarts on its own, so say why it started, every
             // boot, power on included: that is the question a sysop brings
@@ -2931,13 +2988,13 @@ bool Bbs::rowSys(Session& s) {
                     bootWasCrash() ? Color::LightRed
                                    : (bootNoted_ ? Color::Yellow : Color::White));
             return true;
-        case 20: {
+        case 21: {
             char when[24] = "-";
             if (clk::valid()) clk::fmt(when, sizeof(when), "%H:%M:%S");
             statRow(s, "Clock", when, Color::White, clk::valid() ? nullptr : "not set");
             return true;
         }
-        case 21: {
+        case 22: {
             // Silent mode (1.1.0, core/silent), and why: the switch, or the
             // hours and when they end. Off says when the hours start, or
             // that they are waiting for the clock. The note starts at column
@@ -2967,8 +3024,8 @@ bool Bbs::rowSys(Session& s) {
             }
             return true;
         }
-        case 22: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
-        case 23: {
+        case 23: statNum(s, "Loop avg", loopAvgUs_, "us of work"); return true;
+        case 24: {
             // The worst pass says which phase owned it. Without that a stall
             // is a bare number and the investigation starts with a guess,
             // which is exactly how the last one was got wrong.
@@ -2986,8 +3043,8 @@ bool Bbs::rowSys(Session& s) {
             statNum(s, "Loop worst", loopMaxUs_, note);
             return true;
         }
-        case 24: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
-        case 25:
+        case 25: statNum(s, "Loop passes", loopPasses_, nullptr); return true;
+        case 26:
             // How many, not just how bad. One stall at boot and a stall every
             // minute look identical on a high-water mark.
             statNum(s, "Slow passes", slowCount_, "over 50ms");
@@ -3033,26 +3090,26 @@ bool Bbs::rowSys(Session& s) {
             }
             return true;
 
-        case 26: rowSection(s, "traffic"); return true;
-        case 27:
+        case 27: rowSection(s, "traffic"); return true;
+        case 28:
             // Closed to callers (1.1.0, CONFIG board): the first thing to
             // know about a board nobody seems to be calling.
             if (syscfg::get().closed) statRow(s, "Callers", "closed", Color::Yellow, "CONFIG board");
             else                      statRow(s, "Callers", "open", Color::LightGreen);
             return true;
-        case 28:
+        case 29:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(activeNodes()));
             snprintf(buf, sizeof(buf), "of %u, peak %u", static_cast<unsigned>(BBS_MAX_NODES),
                      static_cast<unsigned>(peakNodes_));
             statRow(s, "Nodes busy", num, Color::LightGreen, buf);
             return true;
-        case 29: statNum(s, "Calls", callsBoot_, "since boot"); return true;
-        case 30:
+        case 30: statNum(s, "Calls", callsBoot_, "since boot"); return true;
+        case 31:
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(calllog::count()));
             snprintf(buf, sizeof(buf), "of %u kept", static_cast<unsigned>(BBS_CALLLOG_SIZE));
             statRow(s, "Log", num, Color::LightGreen, buf);
             return true;
-        case 31: {
+        case 32: {
             uint8_t run = 0;
             for (uint8_t k = 0; k < plugins::count(); ++k) if (plugins::running(k)) ++run;
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(run));
@@ -3060,7 +3117,7 @@ bool Bbs::rowSys(Session& s) {
             statRow(s, "Plugins", num, Color::LightGreen, buf);
             return true;
         }
-        case 32: {
+        case 33: {
             uint8_t live = 0;                                  // only the bans still running
             BanList::Entry e;
             for (uint8_t k = 0; k < BBS_BAN_SLOTS; ++k) if (bans_.at(k, plat::millis(), e)) ++live;

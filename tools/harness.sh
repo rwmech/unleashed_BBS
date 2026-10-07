@@ -115,6 +115,18 @@
 #                   shell      menus, sysinfo, config    (the core's screens)
 #                   login      accounts, guest, sysop    (getting in)
 #                   terminal   ansi, petscii, ascii      (the three flavours)
+#                   portmap    the router asked to forward (1.2.2); each
+#                              test runs tools/fake_router.py and a board
+#                              copy pointed at it, so none of them touches
+#                              this board. A UPnP test (1.2.2-portmap.3)
+#                              needs the stand-in's --ssdp-port and
+#                              --http-port given explicitly and the board
+#                              pointed at the first with BBS_HOST_SSDP;
+#                              portmap_board does both, and upnp_board
+#                              derives all three from ONE "PORT + N" offset
+#                              (udp, udp+1 SSDP, udp+2 HTTP, udp+3 for the
+#                              ctlabs fault), which is the run of four
+#                              parallel.py reserves for every such offset
 #
 #                 tools/harness.sh --tag m --card --only=messaging
 #                 tools/harness.sh --tag m --card --only=forums,sysinfo

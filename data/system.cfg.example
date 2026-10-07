@@ -79,6 +79,21 @@ port = 6400
 # NAT, not only your own devices, so it is off as shipped. CONFIG network.
 # cgnat_local = no
 
+# yes: the board asks the router on its own network to forward its ports to
+# it, so you open no router menu (1.2.2). PCP first, then NAT-PMP, both UDP
+# to the router on port 5351, then UPnP, which is the one most consumer
+# routers have; where any of them is switched on the result is exactly a
+# port forward you made by hand, with nobody in the middle. The telnet port
+# and, on a board that has one, the SSH port; never the backup window's.
+# Off as shipped, because a router's own menu calls this UPnP or NAT-PMP and
+# some people have turned it off on purpose.
+#
+# It does nothing at all behind carrier-grade NAT: the mapping succeeds and
+# your router's own outside address still is not yours. The board says so
+# rather than claiming to be reachable. PORTMAP shows what happened and
+# PORTMAP NOW asks again. CONFIG network, used at once.
+# port_map = no
+
 # Staff passwords, entered at any prompt as: BYE <password>
 # A wrong password is a normal logoff; 3 wrong from one IP in 15 min = 15 min ban.
 # Empty disables that level. Max 32 characters, case-sensitive.

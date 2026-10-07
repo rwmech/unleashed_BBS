@@ -53,6 +53,7 @@
 #include "silent.h"
 #include "linkfam.h"
 #include "photos.h"
+#include "portmap.h"           // CONFIG network's "Mapped" row (1.2.2)
 #include "../plugins/link.h"   // CONFIG sats (1.2.0): the link's pairings
 #include "satwords.h"
 #include "../platform/platform.h"
@@ -1100,6 +1101,41 @@ const CfgField kNetwork[] = {
       "Wi-Fi beside wire",
       "Yes: Wi-Fi joins too, so sats pair; callers stay on the wire. Next restart." },
 #endif
+    // The board asks the router to forward its ports (1.2.2, portmap.*).
+    // Every board: this is the one reachability rung that has nothing to do
+    // with SSH, so a base ESP32 gets it too. Last, after the board-only rows
+    // above, so no row a test or a guide counts down to moves on any
+    // profile. Live, like the CGNAT row, because nothing in it touches the
+    // radio or the listener (configSave's verdict says so).
+    //
+    // Off as shipped, and the note says what yes does rather than naming
+    // the protocols: a sysop looking for the matching router setting finds
+    // it under "UPnP" far more often than under NAT-PMP, which is what the
+    // failure line says when a router refuses.
+    // "Have router forward" is 19 characters, because Form::labelWidth is
+    // 20 at 80 columns and drawField pads AND CUTS to it. "Ask router to
+    // forward" was 21 and came out as "Ask router to forwar", which the
+    // host test found and three code-review passes did not. Same shape as
+    // the co-sysop rows losing their digit to the 9-character column.
+    { "port_map",       "Port map", CK_YESNO, 0, 0, 4, "Yes: ask your router to forward them.",
+      "Have router forward",
+      "Yes: the board asks your router to forward its ports; you open no menu." },
+    // What came of it, read only, with an "as of". Not "reachable": the
+    // router granting a mapping proves it did as it was asked, not that a
+    // packet from outside arrives, and nothing on the board can test that.
+    // Every string on these two rows is measured against the column that
+    // draws it, because NOTHING in the build is: Form::labelWidth is 20 at
+    // 80 columns and 9 at 40 and drawField CUTS to it, and Form::statusW is
+    // 78 and 38 and the status line cuts too. Four of the six strings here
+    // were over when first written and only one of them had a test, which
+    // is how "Ask router to forward" shipped as "Ask router to forwar".
+    //
+    // 55 is the form's box at 80 columns (Form::boxW), and a longer value
+    // scrolls to its TAIL, which on a row nothing can focus would show the
+    // end of a sentence and not the start. portmap::line is built to fit.
+    { "port_map_state", "Mapped",   CK_INFO,  0, 0, 55, "PORTMAP says more; NOW asks again.",
+      "What the router did",
+      "What the router granted, and when it answered. PORTMAP says more." },
 };
 
 // CONFIG photos (1.2.0; CONFIG cameras until Rob's naming of 2026-09-28,
@@ -1585,6 +1621,7 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
     else if (!strcmp(key, "silent"))                snprintf(out, n, "%s", c.silent ? "yes" : "no");
     else if (!strcmp(key, "closed"))                snprintf(out, n, "%s", c.closed ? "yes" : "no");
     else if (!strcmp(key, "cgnat_local"))           snprintf(out, n, "%s", c.cgnatLocal ? "yes" : "no");
+    else if (!strcmp(key, "port_map"))              snprintf(out, n, "%s", c.portMap ? "yes" : "no");
     else if (!strcmp(key, "silent_from"))           board::fmtTime(c.silentFrom, out, n);
     else if (!strcmp(key, "silent_until"))          board::fmtTime(c.silentUntil, out, n);
     else if (!strcmp(key, "call_minutes"))          snprintf(out, n, "%u", c.callMinutes);
@@ -1628,6 +1665,16 @@ void cfgLiveValue(const char* key, char* out, size_t n) {
         snprintf(out, n, "%s", set ? kMasked : "");
     }
     else out[0] = '\0';
+}
+
+// ---------------------------------------------------------------------------
+// cfgInfoValue: a core page's read-only row, which no system.cfg key stands
+// for. Built for the caller's width, which is why it is not in
+// cfgLiveValue: that one has no terminal to ask.
+// ---------------------------------------------------------------------------
+void cfgInfoValue(const char* key, char* out, size_t n, bool wide) {
+    out[0] = '\0';
+    if (!strcmp(key, "port_map_state")) portmap::line(out, n, wide);
 }
 
 // cfgPluginValue: what a plugin is running with, for the keys the file
@@ -2707,6 +2754,134 @@ void Bbs::configPages(Session& s) {
 }
 
 // ---------------------------------------------------------------------------
+// cmdPortmap: what the board asked the router for and what it got (1.2.2).
+//
+// CONFIG network's "Mapped" row is the one-line answer; this is the page
+// that says WHICH failure, because the three common ones want three
+// different things of a sysop: a router with the feature switched off wants
+// a menu, a router that answers nothing may have no such menu at all, and a
+// router whose own outside address belongs to the carrier cannot be helped
+// by any amount of forwarding. The third is the one a sysop would otherwise
+// spend an evening on.
+//
+// It says "mapped", never "reachable". The router granting a mapping proves
+// it did as it was asked; whether a packet from outside arrives needs
+// somebody outside to try, and nothing on the board can be that somebody.
+// ---------------------------------------------------------------------------
+void Bbs::cmdPortmap(Session& s, const char* arg) {
+    while (*arg == ' ') ++arg;
+    if (ieq(arg, "now")) {
+        portmap::askNow();
+        say(s.term, s.tl, Color::LightGreen, "Asking your router now.");
+        prompt(s);
+        return;
+    }
+    const portmap::Status st = portmap::status();
+    const uint8_t w    = rowWidth(s);
+    const bool    wide = w >= 60;
+    char buf[48], num[16], addr[16];
+    // statRow never truncates, so a note longer than the row's spare room
+    // wraps it and leaves the reverse attribute hanging. The label column is
+    // 13 and the value column 9, so a 39 column row has 16 characters left:
+    // every note below is either inside that or given a short form, and the
+    // ones with nothing short enough to say are dropped (a nullptr).
+    auto note = [&](const char* longer, const char* shorter) {
+        return wide ? longer : shorter;
+    };
+
+    rowTitle(s, "Port map");
+    statRow(s, "Setting", st.on ? "on" : "off", st.on ? Color::LightGreen : Color::Grey,
+            st.on ? nullptr : note("CONFIG network turns it on", "CONFIG network"));
+    if (st.on) {
+        // "none" rather than "neither" since UPnP joined the probe
+        // (1.2.2-portmap.3): there are three to say no to now, and the
+        // note names them.
+        const char* who = st.asking                        ? "asking"
+                        : st.proto == portmap::Proto::Pcp  ? "PCP"
+                        : st.proto == portmap::Proto::Pmp  ? "NAT-PMP"
+                        : st.proto == portmap::Proto::Upnp ? "UPnP"
+                        : st.proto == portmap::Proto::None ? "none"
+                                                           : "not asked";
+        statRow(s, "Router", who,
+                st.proto == portmap::Proto::None ? Color::Yellow : Color::LightGreen,
+                st.proto == portmap::Proto::None
+                    ? note("no UPnP, PCP or NAT-PMP", nullptr) : nullptr);
+        // The outside address, and the one judgement that matters about it.
+        // A private address here means a carrier NAT or a second router,
+        // and the mapping is correct and worthless.
+        portmap::addrText(st.external, addr, sizeof(addr));
+        statRow(s, "Outside", addr, st.external ? (st.carrier ? Color::LightRed : Color::LightGreen)
+                                                : Color::Grey,
+                !st.external ? nullptr
+                : st.carrier ? note("NOT on the internet: your carrier's", "your carrier's")
+                             : note("on the internet", nullptr));
+        if (st.port) {
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(st.port));
+            statRow(s, "Telnet", num, Color::LightGreen, note("forwarded to this board", "forwarded"));
+        }
+        if (st.sshPort) {
+            snprintf(num, sizeof(num), "%u", static_cast<unsigned>(st.sshPort));
+            statRow(s, "SSH", num, Color::LightGreen, note("forwarded to this board", "forwarded"));
+        }
+        if (st.held) {
+            // A UPnP router that would only make a mapping with no expiry
+            // (IGD error 725) gave no lease, so there is no figure to
+            // print: "0h00m" over a working mapping is the
+            // confidently-wrong class PORTMAP exists to avoid. It is still
+            // re-asserted hourly, which is also the only way this board
+            // notices such a router rebooting.
+            if (st.permanent) {
+                // "until off" and not "re-asked hourly": the hourly
+                // re-assert is how a router's reboot is noticed, but what
+                // a sysop needs to know about a mapping with no expiry is
+                // that it stays in the router until this setting is
+                // switched off while the board is running (portmap.h's
+                // Leases note, and COMMANDS.md).
+                statRow(s, "Lease", "none", Color::LightGreen,
+                        note("never expires; off gives it back", "until off"));
+            } else {
+                snprintf(num, sizeof(num), "%luh%02lum",
+                         static_cast<unsigned long>(st.leftSecs / 3600u),
+                         static_cast<unsigned long>((st.leftSecs % 3600u) / 60u));
+                statRow(s, "Lease", num, Color::LightGreen,
+                        note("renewed at half of it", "renewed at half"));
+            }
+        }
+        if (st.asOf) {
+            clk::fmtEpoch(buf, sizeof(buf), "%H:%M", st.asOf);
+            // "Answered", not "asked": the stamp moves when the router
+            // replies, so a router that has gone deaf leaves it where it
+            // was, which is what an "as of" should do.
+            statRow(s, "Answered", buf, Color::Grey, note("nothing has tested it since", nullptr));
+        }
+        snprintf(num, sizeof(num), "%u", static_cast<unsigned>(st.asked));
+        snprintf(buf, sizeof(buf), wide ? "%u got nowhere" : "%u failed",
+                 static_cast<unsigned>(st.failed));
+        statRow(s, "Asked", num, Color::Grey, buf);
+    }
+    rowRule(s);
+    // The reason, then what to do about it, each wrapped to this caller's
+    // width rather than cut: the whole value of this page over the one-line
+    // surfaces is the words, so nothing here is shortened to fit 40 columns.
+    auto sentence = [&](Color c, const char* text) {
+        if (!text || !*text) return;
+        char row[136] = "";              // wrap leaves it alone for empty text
+        s.term.color(s.tl, c);
+        for (const char* q = wrap(text, row, sizeof(row), w); ; q = wrap(q, row, sizeof(row), w)) {
+            s.term.text(s.tl, row);
+            s.term.nl(s.tl);
+            if (!q || !*q) break;
+        }
+    };
+    sentence(st.why == portmap::Why::Ok   ? Color::LightGreen
+           : st.why == portmap::Why::Off  ? Color::Grey
+                                          : Color::Yellow, portmap::whyText(st));
+    if (st.on) sentence(Color::Grey, portmap::whatToDo(st));
+    rowText(s, Color::DarkGrey, "PORTMAP NOW asks your router again");
+    prompt(s);
+}
+
+// ---------------------------------------------------------------------------
 // cmdConfig: CONFIG lists the pages, CONFIG <page> opens one as a form.
 // Editing is one page at a time and one sysop at a time; saving writes only
 // that page's keys and reloads the running configuration.
@@ -2823,6 +2998,15 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
             if (!coreSec || !want[cnt + 1].found) cfgLiveValue("tz", tzv, sizeof(tzv));
             const char* name = tzones::nameFor(tzv);
             snprintf(buf2, sizeof(g_cfgBuf[0]), "%s", name ? name : tzones::kCustom);
+            g_cfgWas[i] = bbsu::hash(buf2);
+            continue;
+        }
+        // A core page's read-only row: nothing in system.cfg stands for it,
+        // and it is built for this caller's width here rather than in
+        // cfgLiveValue, which has no terminal to ask. A plugin's PS_INFO
+        // still comes from the plugin's own setting().
+        if (f.kind == CK_INFO && coreSec) {
+            cfgInfoValue(f.key, buf2, sizeof(g_cfgBuf[0]), s.term.cols() >= 60);
             g_cfgWas[i] = bbsu::hash(buf2);
             continue;
         }
@@ -3261,16 +3445,23 @@ bool Bbs::configSave(Session& s, char* err, size_t errLen) {
     bool ok = configReloadAll(err, errLen);
     // Neither the radio nor the listener is touched until a restart (see
     // kNetwork), so "live" would be a promise the board is not keeping.
-    // The CGNAT row (1.1.1) is one exception: the local-address rule reads
-    // it on every question, so a save of that row alone is live. SSH lines
-    // (1.2.2) is the other: sshd::boardCap() reads it at each connection.
+    // The CGNAT row (1.1.1) is the first exception: the local-address rule
+    // reads it on every question, so a save of that row alone is live. SSH
+    // lines (1.2.2) is the second: sshd::boardCap() reads it at each
+    // connection. Port mapping is the third (1.2.2): portmap's own tick
+    // reads the setting every pass, and nothing in it touches the radio or
+    // the listener. A save of that row also asks the router again at once,
+    // so a sysop who has just turned the feature on in the router menu sees
+    // the answer change rather than waiting out the hour's retry.
     bool restartOnly = false;
-    for (uint8_t k = 0; k < n; ++k)
+    for (uint8_t k = 0; k < n; ++k) {
+        if (!strcmp(pairs[k].key, "port_map")) { portmap::askNow(); continue; }
         if (strcmp(pairs[k].key, "cgnat_local") && strcmp(pairs[k].key, "closed")
 #if BBS_HAS_SSH
             && strcmp(pairs[k].key, "ssh_lines")
 #endif
            ) restartOnly = true;
+    }
     if (ok && g_cfgPage->fields == kNetwork && restartOnly && !strcmp(err, "Saved and live"))
         snprintf(err, errLen, nowOpen ? "Saved: OPEN network, from restart"
                                       : "Saved, used from the next restart");

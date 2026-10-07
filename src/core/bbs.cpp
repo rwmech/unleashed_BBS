@@ -48,6 +48,7 @@
 #include "sysconfig.h"
 #include "calllog.h"
 #include "photos.h"            // retention for every camera, on the runner (1.2.0)
+#include "portmap.h"           // the router asked to forward the ports (1.2.2)
 #include "plugin.h"
 #include "recovery.h"
 #include "silent.h"
@@ -563,6 +564,19 @@ void Bbs::tick() {
     space::tick();                   // a free-space measure the runner finished (1.1.2)
     calllog::mirrorTick();           // the caller log's card copy, on the runner (1.1.2)
     photos::tick(now);               // Photos kept in bounds, for every camera: the runner prunes (1.2.0)
+    // The router asked to forward the board's ports (1.2.2, core/portmap.*).
+    // The ports it is LISTENING on, not the configured ones: a port changed
+    // in CONFIG waits for a restart, and forwarding the new number before
+    // the board answers on it would send callers to a closed port. A load
+    // and a compare in the passes where there is nothing due; the whole
+    // thing is a non-blocking UDP exchange, never a runner job, because the
+    // runner is serial and a job sitting on a 1.75 s timeout would hold a
+    // caller's FILES page behind it.
+#if BBS_HAS_SSH
+    portmap::tick(now, port(), sshPort());
+#else
+    portmap::tick(now, port(), 0);
+#endif
     board::silentTick(now);          // the switch and the hours: a compare, and a look once a second
     heapWatch(now);
     serviceShutdown(now);

@@ -56,9 +56,9 @@
 #if defined(BBS_HAS_SSH) && BBS_HAS_SSH
 #include <sys/eventfd.h>
 #endif
-#ifdef BBS_HAS_ETH
-#include <arpa/inet.h>             // htonl: the host Ethernet's address
-#endif
+// inet_addr for the stand-in router (gatewayIp), and htonl for the host
+// Ethernet's address on a board profile that has one.
+#include <arpa/inet.h>
 
 namespace {
 std::string g_fsBase   = "../data";
@@ -297,6 +297,50 @@ NetInfo netInfo() {
     }
 #endif
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// The stand-in router, for the port-mapping tests (src/core/portmap.*).
+//
+// BBS_HOST_GATEWAY is "a.b.c.d" or "a.b.c.d:port", and unset means the board
+// has no default route, so portmap says "no network address yet" and sends
+// nothing. A test runs a small NAT-PMP/PCP responder on 127.0.0.1 and points
+// this at it; the port is part of the setting because 5351 is one number and
+// the lanes run side by side.
+// ---------------------------------------------------------------------------
+namespace {
+// Parsed once: a getenv and a parse on every tick of the loop would be the
+// host build charging for something the board gets from a register.
+struct HostGw {
+    uint32_t addr = 0;
+    uint16_t port = 0;
+    HostGw() {
+        const char* e = getenv("BBS_HOST_GATEWAY");
+        if (!e || !*e) return;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.31s", e);
+        char* colon = strchr(buf, ':');
+        if (colon) { *colon = '\0'; port = static_cast<uint16_t>(strtoul(colon + 1, nullptr, 10)); }
+        const in_addr_t a = inet_addr(buf);
+        if (a != INADDR_NONE) addr = a;
+    }
+};
+const HostGw& hostGw() { static const HostGw g; return g; }
+}  // namespace
+
+uint32_t gatewayIp() { return hostGw().addr; }
+uint16_t hostGatewayPort() { return hostGw().port; }
+
+// BBS_HOST_SSDP is the stand-in router's SSDP port. Unset means 1900, which
+// a lane will not be able to bind; every port-mapping test that wants UPnP
+// sets it, and one that does not gets a board whose UPnP search goes
+// nowhere, which is a case worth being able to run too.
+uint16_t hostSsdpPort() {
+    static const uint16_t p = []() -> uint16_t {
+        const char* e = getenv("BBS_HOST_SSDP");
+        return (e && *e) ? static_cast<uint16_t>(strtoul(e, nullptr, 10)) : 0;
+    }();
+    return p;
 }
 
 #ifdef BBS_HAS_ETH
