@@ -586,6 +586,15 @@ uint16_t gatewayPort() {
 // rather than moving three stages of a protocol above it.
 void upnpForget();
 
+// noSockSoon: the board ran out of sockets part way through an exchange.
+//
+// Told apart from a router that said nothing, because they want opposite
+// answers: a shortage is the board's own and clears in seconds, so it keeps
+// what it has learned (the control URL) and asks again in a minute, where
+// giveUp would forget the URL, blame the router in the log and wait an hour.
+// Returns true when it handled it, so a caller reads as one line.
+bool noSockSoon(uint32_t now);
+
 void closeFd() {
     if (g_fd >= 0) { close(g_fd); g_fd = -1; }
 }
@@ -989,7 +998,22 @@ bool takeLocation(const char* reply) {
 
     size_t n = 0;
     if (*loc != '/') { g_uPath[n++] = '/'; }
-    while (*loc && *loc != '\r' && *loc != '\n' && *loc != ' ') {
+    // Printable, non-space ASCII only, the same rule feedDesc's control URL
+    // already uses, and for the same reason: this path goes straight into a
+    // "GET %s HTTP/1.1" request line. Stopping only at CR, LF, space and
+    // NUL let tab, 0x0B, 0x0C, 0x7F and every byte from 0x80 up through.
+    // No header injection was possible either way, since CR and LF were
+    // both already excluded; what it bought was a malformed GET the router
+    // answers 400 to, reported to the sysop as "the router answered
+    // nothing" about a router that works. One rule for both paths.
+    // Written against an explicit unsigned byte, not `*loc > 0x20`: whether
+    // plain char is signed is a per-target choice, so the signed form would
+    // reject 0x80 and up on Xtensa and accept them on a target where char
+    // is unsigned, which is the worst kind of difference to leave in a
+    // parser of somebody else's bytes.
+    for (;;) {
+        const unsigned char c = static_cast<unsigned char>(*loc);
+        if (c <= 0x20 || c >= 0x7F) break;
         if (n + 1 >= sizeof(g_uPath)) return false;
         g_uPath[n++] = *loc++;
     }
@@ -1464,6 +1488,16 @@ bool begin(uint8_t i, uint8_t ask, bool addrAsk, bool del, uint32_t now) {
 
 // giveUp: this exchange got nowhere. Either fall through to the other
 // protocol, or conclude that the gateway does not do this at all.
+bool noSockSoon(uint32_t now) {
+    if (!g_noSock) return false;
+    g_why = Why::NoSocket;
+    waitFor(now, kSoonMs);
+    closeFd();
+    plat::log("portmap: no socket free to go on asking the router; "
+              "trying again in a minute");
+    return true;
+}
+
 void giveUp(uint32_t now) {
     closeFd();
     ++g_failed;
@@ -1831,7 +1865,7 @@ void serviceUpnp(uint32_t now) {
             buf[n] = '\0';
             if (!takeLocation(buf)) continue;
             g_uStage = U_DESC;
-            if (!openTcp(now)) { giveUp(now); return; }
+            if (!openTcp(now)) { if (!noSockSoon(now)) giveUp(now); return; }
             return;
         }
         if (late) { giveUp(now); return; }
@@ -1904,7 +1938,7 @@ void serviceUpnp(uint32_t now) {
                       g_uSvc == S_PPP ? "PPP" : "IP",
                       static_cast<unsigned>(g_uVer), static_cast<unsigned>(g_uHttp));
             g_uStage = U_SOAP;
-            if (!openTcp(now)) { giveUp(now); return; }
+            if (!openTcp(now)) { if (!noSockSoon(now)) giveUp(now); return; }
             return;
         }
         if (eof) {

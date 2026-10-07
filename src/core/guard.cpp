@@ -111,6 +111,16 @@ bool BanList::banned(uint32_t ip, uint32_t now) {
 // stalest entry no live ban is using, which is still reused freely.
 // ---------------------------------------------------------------------------
 BanList::Entry* BanList::slotFor(uint32_t ip, uint32_t now) {
+    // 0 is this table's empty-slot sentinel, so it cannot also be an
+    // address. Refused here rather than only being skipped in the match
+    // below: skipping stopped an existing zero entry being FOUND, and
+    // nothing stopped one being MADE, which is the same hole one step
+    // later (at() hides it, full() reads it as free, and the next address
+    // is handed the slot its ban is sitting in). No TCP peer is 0.0.0.0,
+    // but the branch next door is designing caller lines with no address
+    // at all, and a comment promising a property the code does not have
+    // has been believed here four times.
+    if (!ip) return nullptr;
     Entry* slot   = nullptr;
     Entry* empty  = nullptr;
     Entry* oldest = nullptr;      // the stalest entry no running ban is using

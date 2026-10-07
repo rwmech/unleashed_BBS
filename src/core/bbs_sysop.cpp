@@ -2744,9 +2744,23 @@ void Bbs::configPages(Session& s) {
         if (plugins::enabled(i)) anyStuck = true; else anyOff = true;
     }
     if (anyOff || anyStuck) {
-        const char* key = anyOff && anyStuck ? "- switched off   ! on, but this board cannot run it"
-                        : anyOff             ? "- switched off"
-                                             : "! on, but this board cannot run it";
+        // Each form has a short one for a narrow terminal. The long pair
+        // together is 51 characters, which wraps on a C64 and leaves the
+        // tail of the key sitting under the list on its own line: the one
+        // row on this page whose whole job is to explain the others is the
+        // worst row to let wrap. The rows above it already clip at a word
+        // because `board` and `forums` wrapped at 40 (website 0.16.0).
+        // Each is gated on its OWN length rather than on one threshold for
+        // the page, so a 40 column sysop keeps the longer wording wherever
+        // it fits: the pair is 51 and needs the short form, but "! on, but
+        // this board cannot run it" is 34 and does not.
+        const uint8_t w = rowWidth(s);
+        const char* key = anyOff && anyStuck
+                              ? (w >= 51 ? "- switched off   ! on, but this board cannot run it"
+                                         : "- off   ! cannot run here")
+                        : anyOff ? "- switched off"
+                                 : (w >= 34 ? "! on, but this board cannot run it"
+                                            : "! on, cannot run here");
         rowText(s, Color::DarkGrey, key);
     }
     rowText(s, Color::DarkGrey, "F1 saves a page, left arrow leaves it");
@@ -2788,6 +2802,20 @@ void Bbs::cmdPortmap(Session& s, const char* arg) {
     auto note = [&](const char* longer, const char* shorter) {
         return wide ? longer : shorter;
     };
+    // A row whose value can be longer than the nine column value field has
+    // to choose its note against the room actually left, because statRow
+    // pads to nine and never cuts: the comment above did the arithmetic with
+    // 9, and an outside address is up to 15. A three-octet carrier address
+    // such as 100.108.201.133 put a 40 column row at 43 columns and a 61
+    // column row at 64, wrapping the one row this page exists for.
+    auto fitNote = [&](const char* value, const char* longer,
+                       const char* shorter) -> const char* {
+        const size_t vw   = strlen(value);
+        const size_t used = 13u + (vw > 9u ? vw : 9u) + 1u;
+        if (used + strlen(longer) <= w) return longer;
+        if (shorter && used + strlen(shorter) <= w) return shorter;
+        return nullptr;
+    };
 
     rowTitle(s, "Port map");
     statRow(s, "Setting", st.on ? "on" : "off", st.on ? Color::LightGreen : Color::Grey,
@@ -2813,8 +2841,8 @@ void Bbs::cmdPortmap(Session& s, const char* arg) {
         statRow(s, "Outside", addr, st.external ? (st.carrier ? Color::LightRed : Color::LightGreen)
                                                 : Color::Grey,
                 !st.external ? nullptr
-                : st.carrier ? note("NOT on the internet: your carrier's", "your carrier's")
-                             : note("on the internet", nullptr));
+                : st.carrier ? fitNote(addr, "NOT on the internet: your carrier's", "carrier's")
+                             : fitNote(addr, "on the internet", "public"));
         if (st.port) {
             snprintf(num, sizeof(num), "%u", static_cast<unsigned>(st.port));
             statRow(s, "Telnet", num, Color::LightGreen, note("forwarded to this board", "forwarded"));
@@ -3006,7 +3034,17 @@ void Bbs::cmdConfig(Session& s, const char* arg, uint32_t now, uint8_t focus) {
         // cfgLiveValue, which has no terminal to ask. A plugin's PS_INFO
         // still comes from the plugin's own setting().
         if (f.kind == CK_INFO && coreSec) {
-            cfgInfoValue(f.key, buf2, sizeof(g_cfgBuf[0]), s.term.cols() >= 60);
+            // Form::wide, not a width of our own: the box this value is
+            // drawn into is 56 columns at 80 and 27 below it (Form::boxW),
+            // and a value longer than the box scrolls to its TAIL, which on
+            // a row nothing can focus shows the end of a sentence and never
+            // the start. Asking for the wide form at 60 gave a 60 to 79
+            // column terminal 55 characters in a 27 column box, reading
+            // "ped, 1h59m left, as of 14:". Every other string on the page
+            // flips at 80 because Form::pick uses wide() too, so deriving
+            // the threshold from the thing that draws the box is also what
+            // keeps the row's value, its label and its note agreeing.
+            cfgInfoValue(f.key, buf2, sizeof(g_cfgBuf[0]), Form::wide(s.term));
             g_cfgWas[i] = bbsu::hash(buf2);
             continue;
         }

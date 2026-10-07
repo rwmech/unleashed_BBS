@@ -2116,14 +2116,124 @@ this tree.
   - Same shape as the queued plugin on/off item: the fact is in hand and
     simply not shown at the moment somebody needs it.
 
-- **1.2.2 rescoped by Rob, 2026-10-06.** What stays, what moves, and one
-  new item.
-  - **In 1.2.2, final (Rob trimmed it twice on 2026-10-06, all five items
-    now built):** ten SSH lines with `ssh_lines`; the two ban fixes (the
-    fail-open table and the 24.86-day resurrection); port mapping with all
-    three protocols, proven on a real router; **every line addressable by
-    its number** (`/p0` for the sysop and `/p11` for the busy line); and
-    **plugin on/off in CONFIG's page list**.
+- **1.2.2 is built and ready to tag (rel-1.2.2, 2026-10-07).** Six items,
+  not five: Rob added the chat line truncation fix during integration. The
+  two lanes (`ssh-lines` and `portmap-1.2.2`) merged onto `rel-1.2.2`, both
+  from c2ac89e, so the four conflicts were all appends and only one needed a
+  decision: CONFIG network's live-save list now carries four exceptions from
+  two lanes (`cgnat_local`, `closed`, `ssh_lines` behind `BBS_HAS_SSH`, and
+  `port_map`, which also calls `portmap::askNow()`). What the integration is
+  worth remembering for:
+  - **The chat bug was real and its stated cause was not, which is why the
+    fix is not the one that was asked for.** The report was that `kLineMax`
+    64 against `BBS_LINE_MAX` 72 let the editor take 72 and the room keep
+    64. It does not: `armInput` has armed the editor at
+    `min(cols - 2, kLineMax)` since 0.10.0, so the ceiling was already
+    enforced and already a ceiling rather than a width. What was wrong is
+    that **hitting it said nothing**: `editor.cpp`'s
+    `if (len_ >= max_) return Res::Editing` swallows the keystroke with no
+    bell and no echo, so a caller watched the sentence stop growing. On a
+    40-column terminal the ceiling is 38, which fits the reported "38% of
+    traffic losing its tail" far better than a 64/72 mismatch would. The fix
+    rings the bell, in `chat::onKey` alone, reading `Session::bellOff` live.
+    `kLineMax` is deliberately untouched: the ring is
+    `kTagMax + 1 + kLineMax` per line times `history` (48), allocated at
+    plugin start, so raising the ceiling spends heap on every line of the
+    room. **Fix what the measurement says, not what the diagnosis says.**
+    **One bell a line, not one a refused keystroke** (`g_fullRang`, the code
+    review of the first cut): a paste of two hundred characters past the
+    ceiling was a continuous tone, and the bells also eat the timeline room
+    `BBS_RX_ROOM` gates that caller's own socket reads on, so their typeahead
+    stalled behind their own beeping. Cleared by any key the editor does
+    take, so backspacing and carrying on rings again. Every other "no" on
+    this board says it once, and **a notice that repeats per event becomes
+    its own denial of service when the event is a keystroke**: the same
+    shape as 1.1.2's refusal logged every pass.
+  - **The three docs described the pre-review behaviour and the code did
+    not** (found finishing the release, fixed in the same commit): CHANGELOG,
+    CHAT.md and COMMANDS.md all said the room rings "for each key it will not
+    take", which is exactly what the latch above removed. The test asserted
+    `bells == 1` and passed, so nothing mechanical could catch it. **When a
+    review changes a behaviour, the sentence that describes it is part of the
+    change**, not a follow-up.
+  - **`/p0` was already working, and the commit that claims it did not touch
+    it.** 4d2702a changed `Bbs::nodeByArg`, which `PAGE`, `TIME`, `KICK` and
+    `SNOOP` share; chat's `/p` has its own `parseNode`, and that has always
+    read `0` and two digits. So the headline names a path the commit never
+    changed, and the test goes through PAGE because that is where the change
+    actually is.
+  - **A test that passed 4 of 4 against the parent, caught by running it
+    there.** `test_config_plugin_state`'s first cut asserted the marking
+    rule contract-style: every mark is one of `' '`, `'-'`, `'!'`, chat
+    carries none, and the key appears exactly when a mark does. Every one of
+    those holds on the build with no feature at all, because every row then
+    carried a leading space and an empty set of marks agrees with an absent
+    key. It needed "at least one plugin carries a mark" to be worth
+    anything. **A contract test can be vacuously true; the fix is to insist
+    something is actually there.**
+  - **tools/testclient.py auto-merged with no conflict, and that is the case
+    to distrust.** Checked by hand: `PIN_BOARD` byte-identical to the
+    ssh-lines version, every other per-profile table the union of both
+    lanes, and ORDER_NAMES 214 + 2 + 38 = 254 with all 254 test functions
+    scheduled exactly once. The lanes' port offsets overlap (both took
+    3923-3925) and that is harmless, because `parallel.py`'s
+    `port_offsets()` builds a set and a worker runs one lane at a time.
+  - **Worth knowing for `--jobs`: one port block now packs 16 workers**, not
+    the 27 of 1.1.2-dev.3, because portmap's offsets take the span to 4303.
+    `--jobs 24` is not refused; it quietly gets 16.
+  - **Found by the review and deliberately NOT fixed in 1.2.2, queued for
+    1.2.3: announce republishes the board's own port the moment a mapping
+    lapses, including a port it has already learned belongs to another
+    host.** `publicPort` (announce.cpp) falls back to `g_public` when
+    `portmap::externalPort` returns 0, which it does unless a mapping is
+    held. On a router that answered UPnP 718 `ConflictInMappingEntry` the
+    board *knows* 6400 is forwarded to somebody else on the LAN, walked to
+    6401, and on a lapse goes back to advertising 6400: callers are then
+    sent to a stranger's box rather than to nothing. Nothing nudges announce
+    on a change either, so the directory keeps the old number for up to
+    `interval` minutes, where a caller join already gets a nudge.
+    **Not fixed here because the fix is new behaviour** (remember the last
+    granted external across a lapse, and nudge on a change) and a patch
+    release is the wrong place for it; the trigger needs a router that
+    refuses the port AND offers another AND then lets the lease lapse. The
+    failure direction is bad enough that it should not sit in the queue
+    long.
+  - **Owed to the web agent before the site catches up:** CLAUDE.md's own
+    note that nine reader-facing passages and `/roadmap` gate `PORTMAP TEST`
+    at 1.2.2 is a **website** job. Nothing in this repo mentions
+    `PORTMAP TEST` outside CLAUDE.md and `internal/`, so the firmware side
+    needed no re-gating.
+  - **In 1.2.2, final (Rob trimmed it twice on 2026-10-06, then added the
+    chat fix on 2026-10-07):** ten SSH lines with `ssh_lines`; the two ban
+    fixes (the fail-open table and the 24.86-day resurrection); port mapping
+    with all three protocols, proven on a real router; **every line
+    addressable by its number** (`0` for the sysop and `11` for the busy
+    line, through `nodeByArg`); **plugin on/off in CONFIG's page list**; and
+    **the chat room ringing when a line is full**.
+  - **Tested, and what the release did NOT build** (Rob, 2026-10-07, cutting
+    the scope: the GitHub Action rebuilds every image from a fresh checkout
+    at the tag, so building all 23 envs locally duplicates 45 minutes the
+    pipeline does anyway, and a genuine failure shows up there as a link
+    error). Targeted host groups shell, messaging and plugins, card and no
+    card at once: **1,212 / 0 with a card and 1,070 / 0 without**, 107 tests,
+    5.5 minutes on `--jobs 16`. The `ssh` group on the S3 host profile:
+    **144 / 0**. Each of the three new tests was also run against its own
+    parent and fails exactly where its docstring says: the bell check alone
+    on d8dc8b9, `page 0` and `page 11` on 6521885, "at least one plugin
+    carries a mark" on 9ea9601.
+    **Static DRAM off the ELF, the three ESP32 boards only**, which is what
+    the local build was cut down to: WROOM 166,096 (**14,640 free**, -408 on
+    1.2.1), Freenove 177,040 (**3,696 free**, -416), **ESP32-CAM 178,512, so
+    2,224 bytes free** (-416 on 1.2.1's 2,640). Images 1,291,728 /
+    1,368,528 / 1,425,056. Zero warnings on all three.
+    **The six S3 boards' figures were not read**, so nobody knows what 1.2.2
+    cost them; they have 65 to 80 KB free each at 1.2.1 and the shared code
+    moved by about 400 bytes, so there is no risk there, but the figures are
+    a gap to fill from the Action's own link output. **The ESP32-CAM is the
+    one to watch**: 2,224 bytes is 185 per session across the twelve slots,
+    so anything new wanting per-session state on that board is arithmetic
+    before it is design, and the next 400-byte core change takes it under
+    2 KB. Read it off the ELF at the start of 1.2.3 rather than at the end.
   - **Moved to 1.3:** themes, the hamburger menu on touch panels, the 4.3B
     panel alignment pass, and three taken out of 1.2.2 on 2026-10-06:
     - **the staff-password counter that cannot be exhausted.** The hole is

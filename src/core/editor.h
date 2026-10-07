@@ -69,6 +69,13 @@ public:
     const char* text()   const { return buf_; }
     uint8_t     len()    const { return len_; }
 
+    // cap: the ceiling this line was armed at, which is not always
+    // BBS_LINE_MAX: the room arms at the terminal's width less two or its
+    // own kLineMax, whichever is smaller. A caller that wants to say the
+    // line is full has to be able to ask, because key() holds the ceiling
+    // by swallowing the keystroke and reports nothing (chat's onKey).
+    uint8_t     cap()    const { return max_; }
+
     // shown: characters on screen for this line (a masked line shows at
     // most BBS_MASK_SHOW stars so it never wraps)
     uint8_t     shown()  const;

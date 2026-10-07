@@ -22315,12 +22315,236 @@ def user_exists(handle):
 # is almost always the subsystem next door: the file areas and the forums
 # both draw through the same list machinery, mail lives inside chat, and the
 # message editor is now shared by mail and forums both.
+def test_line_numbers():
+    """Every line is reachable by the number it carries (1.2.2).
+
+    nodeByArg took "S" for the sysop and "B" for the busy line but bounded
+    its digit branch at 1, so the two lines a caller is pointed at by number
+    in WHO could not be typed as one. Bbs::begin gives the sysop id 0 and
+    the busy line BBS_MAX_NODES + 1 with the callers between, so 0 and 11
+    name a line and 12 does not.
+
+    Tested through PAGE because that is the surface the change has: PAGE,
+    TIME, KICK and SNOOP all share nodeByArg. The room's own /p never did,
+    which is worth saying plainly because the commit is titled for it: chat
+    has its own parseNode, and that already read "0" and two digits, so /p0
+    in the room worked before this and is not what moved.
+
+    The discriminator is cmdPage's own wording. A token that is not a line
+    gets "Usage: PAGE n message"; a line that resolves and is empty gets
+    "Nobody is on node B." So "resolved" and "refused" cannot be confused,
+    which matters because before the fix line 11 gave the usage.
+
+    Run against the parent (the digit branch bounded at 1): two of these
+    four fail there, "page 0 reaches the sysop" and "page 11 names the busy
+    line". The other two pass on the parent and are regression guards rather
+    than catches: 12 must still be refused and an ordinary node must behave
+    as it always did, which is what stops the fix widening too far.
+    """
+    print("Lines by number: 0 is the sysop, 11 the busy line")
+    busy = config_num("BBS_MAX_NODES", 10) + 1
+    op = ansi_login("LineOp")
+    op.send(b"bye testsysop\r")
+    op.wait_for(b"Sysop", 4)
+    op.pump(0.3)
+    op.buf.clear()
+    c = ansi_login("LineCaller")
+    c.pump(0.3)
+    cnode = c.node()                      # read before the buffer is cleared
+    c.buf.clear()
+
+    # 0 is the sysop, who is on and visible (a sysop arrives visible since
+    # 0.17.9), so this is a page delivered rather than a line merely named.
+    c.send(b"page 0 hello\r")
+    ok = check("page 0 reaches the sysop", c.wait_for(b"Page sent to node S", 4))
+
+    # The busy line resolves. Nobody is on it on a quiet board, and that is
+    # the point: the answer names the line, where before the fix the same
+    # token fell through to the usage line.
+    c.pump(0.2)
+    c.buf.clear()
+    c.send(b"page %d hi\r" % busy)
+    ok &= check("page %d names the busy line" % busy,
+                c.wait_for(b"Nobody is on node B", 4))
+
+    # One past the busy line is still not a line.
+    c.pump(0.2)
+    c.buf.clear()
+    c.send(b"page %d hi\r" % (busy + 1))
+    ok &= check("page %d is still refused" % (busy + 1),
+                c.wait_for(b"Usage: PAGE n message", 4))
+
+    # And an ordinary caller's own number is unchanged.
+    op.buf.clear()
+    op.send(b"page %s hi\r" % cnode.encode())
+    ok &= check("an ordinary node is unchanged",
+                op.wait_for(b"Page sent to node %s" % cnode.encode(), 4))
+    c.close()
+    op.close()
+    return ok
+
+
+def test_config_plugin_state():
+    """CONFIG's page list says which plugins are running (1.2.2).
+
+    Three states, not two, and the third is the one a sysop needs: enabled
+    in system.cfg and still not running means this board cannot run it, a
+    PF_SD plugin with no card being the usual case. Shown as "off" that
+    teaches the wrong thing, that switching it on is all that is wanted.
+
+    Asserted against the rule rather than against a list of plugin names,
+    because which plugin is in which state depends on the profile and on
+    whether the run has a card: a test that hard-coded "files is stuck"
+    would be a test of the harness. What is checked is that every mark is
+    one the code can produce, that a plugin known to be running carries
+    none, and that the key under the list appears exactly when there is a
+    mark for it to explain.
+
+    Run against the parent (before the marks): one of these four fails,
+    "at least one plugin carries a mark". The other three pass on the build
+    with no feature at all, because every row then carried a leading space
+    and an empty set of marks agrees with an absent key. That check was
+    added for exactly that reason, after the first cut of this test passed
+    4 of 4 against the parent and proved nothing.
+
+    What the two runs see on the reference board: with no card the marks are
+    "!files !forums -lights", with a card "-lights", so both branches of the
+    key are exercised across the pair rather than only one.
+    """
+    print("CONFIG: plugins marked running, off, or unable to run here")
+    s = ansi_login("CfgPlugState")
+    s.send(b"bye testsysop\r")
+    s.wait_for(b"Sysop", 4)
+    s.buf.clear()
+    s.send(b"config\r")
+    read_list(s)
+    rows = render_lines(s.buf, cols=80)
+    flat = _flat(rows)
+
+    # "<mark><name>" then the description column: the mark sits in the space
+    # the name column always had in front of it, so no row got wider.
+    seen = {}
+    for r in rows:
+        m = re.match(r"^([ \-!])([a-z0-9]+)\s+plugin:", r)
+        if m:
+            seen[m.group(2)] = m.group(1)
+    marks = {v for v in seen.values() if v != " "}
+    print("    marks:", " ".join(sorted("%s%s" % (v, k) for k, v in seen.items())))
+    ok = check("chat is running, so it carries no mark", seen.get("chat") == " ")
+    # The check that cannot pass vacuously, and the reason it is here: the
+    # three above it all hold on the build BEFORE the feature, because every
+    # row then carried a leading space, no row carried a mark, and an empty
+    # set of marks agrees with an absent key. A test of a marking scheme has
+    # to insist that something is actually marked.
+    #
+    # Something always is on the reference board: forums and files are
+    # PF_SD, so a run with no card has them enabled and not running, and a
+    # run with a card has camsat and the camera switched off.
+    ok &= check("at least one plugin carries a mark", bool(marks))
+    ok &= check("every mark is one the board can produce",
+                all(v in " -!" for v in seen.values()))
+    # The key is drawn only when something is marked, so what it must say is
+    # decided by what the rows actually carry on this profile and this run.
+    ok &= check("the key explains exactly the marks on show",
+                (("-" in marks) == ("switched off" in flat)) and
+                (("!" in marks) == ("cannot run it" in flat)))
+    s.close()
+    return ok
+
+
+def test_room_line_full_says_so():
+    """The room says when a line is full rather than swallowing the key.
+
+    The room's ceiling is armInput's: the terminal's width less two, or
+    kLineMax (64), whichever is smaller. The editor enforced it at
+    `if (len_ >= max_) return Res::Editing`, which is silent, so a caller
+    typing past it watched their sentence stop growing with no bell, no
+    mark and nothing on screen, and read it as the board dropping the end
+    of their line. Four callers on the bench reported exactly that, all
+    four unprompted.
+
+    The ceiling has not moved and nothing is truncated anywhere new: what
+    changed is that reaching it is audible, the way the board says no
+    everywhere else (a form error, a page, a broadcast). kLineMax and the
+    room ring are untouched, so the fix costs no heap.
+
+    Both halves are checked, because a bell on every keystroke would pass a
+    test for "the bell rings": typing up to the ceiling must stay silent and
+    only the key past it may ring.
+
+    The payload has word breaks for a reason. _flat() collapses whitespace,
+    so a 64 character run of one letter reads back with a space wherever the
+    room wrapped it and could never match: the first cut of this test failed
+    on its own payload and not on the board.
+
+    Run against the parent (1.2.2-dev.4, before the bell): one of these four
+    fails there, the one about the bell ringing. The other three pass on the
+    broken build and are coverage rather than catches, which is worth saying
+    plainly: claiming a catch for a check that would have passed anyway is
+    the same dishonesty as a test that agrees with the bug. They are kept
+    because they are what stops the fix going too far - a ceiling quietly
+    raised to 72, or refused characters kept anyway.
+
+    The bell check counts exactly one, not "at least one", and that is the
+    code review's finding on the first cut of this fix rather than a
+    flourish: a bell per refused keystroke makes a paste a continuous tone.
+    """
+    print("Chat room: a full line is audible, not silent")
+    # 64 characters, the ceiling at 80 columns, ending in a word that the
+    # eight refused characters would visibly extend if any were kept.
+    ceil_line = "hello from the eighty column side of the room how is the weather"
+    assert len(ceil_line) == 64
+    s = ansi_login("RoomFullSender")
+    r = ansi_login("RoomFullReader")
+    for x in (s, r):
+        x.send(b"chat\r")
+        x.wait_for(b"here.", 4)
+    # Cleared only once BOTH are in. The second caller's arrival rings the
+    # bell at the first, and clearing per caller left that bell in the
+    # sender's buffer and failed the silence check on a sound board.
+    for x in (s, r):
+        x.pump(0.5)
+        x.buf.clear()
+
+    # Up to the ceiling: every character is taken, and nothing rings.
+    s.send(ceil_line.encode())
+    s.pump(0.6)
+    ok = check("typing up to the ceiling rings nothing", s.buf.count(b"\x07") == 0)
+
+    # Past it: the keys are refused, and the refusal is said. ONCE, whatever
+    # the caller types: eight refused keys is one bell, not eight. A paste
+    # past the ceiling was otherwise a continuous tone, and the bells also
+    # eat the timeline room BBS_RX_ROOM gates this caller's own socket reads
+    # on, so their typeahead would stall behind their own beeping. The code
+    # review of the first cut found this; it is latched now.
+    s.buf.clear()
+    s.send(b"g" * 8)
+    s.pump(0.6)
+    bells = s.buf.count(b"\x07")
+    ok &= check("eight keys past the ceiling ring once, not eight times", bells == 1)
+    if bells != 1:
+        print("    bells counted:", bells)
+
+    # The line that arrives is the ceiling's worth, with none of the eight
+    # refused characters in it: the bell is a refusal, not a warning that
+    # something was kept anyway.
+    s.send(b"\r")
+    r.wait_for(b"weather", 6)
+    r.pump(0.8)
+    rflat = _flat(render_lines(r.buf, cols=80))
+    ok &= check("a 64 character line arrives byte exact", ceil_line in rflat)
+    ok &= check("and none of the refused characters arrived", "weatherg" not in rflat)
+    s.close()
+    r.close()
+    return ok
+
+
 GROUPS = {
     # Anything that takes a message from a caller. The editor is shared, so
     # a change to it can break either end.
     "messaging": ["mail", "forums", "chat", "room_commands", "room_new", "room_quit",
                   "survives_notice", "config_forum", "room_time", "bell", "codes_in",
-                  "room_narrow", "room_private", "room_squelch",
+                  "room_narrow", "room_private", "room_squelch", "room_line_full",
                   "long_help", "info_pages", "operator", "notices_in", "ring_mail",
                   "sysop_account", "mail_in_place", "time_warn"],
     # The subsystems that own a session and draw their own screens.
@@ -22332,7 +22556,8 @@ GROUPS = {
     # The shell, its lists and the screens the core draws.
     "shell":     ["menus", "sysinfo", "calls_one", "signs_name", "hardware", "page", "about", "config", "welcome", "paced", "seeded", "fx_codes",
                   "lights", "operator", "dash", "nodes_columns", "version_shown", "screens_command",
-                  "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node"],
+                  "forms", "whois", "space_kept", "config_one_pass", "time_warn", "last_node",
+                 "line_numbers", "config_plugin_state"],
     # Logging in, accounts, staff.
     "login":     ["accounts", "handle_case", "guest", "sysop", "cosysop", "user_admin", "first_setup", "ban",
                   "closed_configured", "closed_fresh", "setup_abort",
@@ -22366,7 +22591,7 @@ GROUPS = {
 # picked, which is the right default for a test added and not yet placed.
 ORDER_NAMES = [
     "test_ansi", "test_telnet_first", "test_petscii", "test_ascii", "test_link_line",
-    "test_page", "test_sysop", "test_cosysop", "test_accounts", "test_accounts_form_notes",
+    "test_page", "test_line_numbers", "test_sysop", "test_cosysop", "test_accounts", "test_accounts_form_notes",
     "test_handle_case",
     "test_user_admin", "test_guest",
     "test_privacy", "test_plugins", "test_about", "test_announce", "test_announce_closed",
@@ -22375,11 +22600,11 @@ ORDER_NAMES = [
     "test_announce_badges", "test_announce_directory",
     "test_chat", "test_room_commands", "test_room_new_commands", "test_room_private", "test_room_quit_logoff",
     "test_room_time_staff_only", "test_time_warn_in_plugins", "test_bell", "test_codes_in_messages", "test_fx_codes", "test_room_narrow_effects",
-    "test_room_narrow_whole_line", "test_room_private_own_tag", "test_last_node_ten", "test_room_squelch_ten",
+    "test_room_narrow_whole_line", "test_room_line_full_says_so", "test_room_private_own_tag", "test_last_node_ten", "test_room_squelch_ten",
     "test_long_help",
     "test_info_pages",
     "test_mail", "test_prompt_survives_notice", "test_menus", "test_sysinfo", "test_calls_one_screen", "test_signs_name_board", "test_hardware",
-    "test_config",
+    "test_config", "test_config_plugin_state",
     # The dashboard (1.1.0). test_dash_pick kicks its own caller and nobody
     # else's; test_dash_waiting leaves mail only for its own sysop account.
     "test_dash_frame", "test_dash_pick", "test_dash_narrow", "test_dash_wide", "test_dash_all",

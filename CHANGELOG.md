@@ -24,6 +24,152 @@ Every released build of µnleashed BBS, newest first. Versions are `MAJOR.MINOR.
 
 A build is only marked **on hardware** once it has run on a real ESP32-WROOM-32E with a caller connected. Everything else is host-tested through `tools/testclient.py`.
 
+## 1.2.2, 2026-10-07
+
+**A patch release: six things, and two of them are security fixes.** Every
+board gets five of the six; ten SSH lines is the S3 boards only, since the
+base ESP32 has no SSH.
+
+A patch does not get the full regression (that follows the tag), so this one
+shipped on code review and the targeted groups for everything it touches.
+
+### Reaching your board without opening a router menu
+
+- **The board can ask your router to forward its ports** (`port_map`, CONFIG
+  network, off as shipped). It asks in PCP, falls back to NAT-PMP, and then
+  to **UPnP IGD**, which is the one most consumer routers actually have; a
+  router's own menu usually calls the whole family UPnP or NAT-PMP. Where it
+  works the result is exactly the port forward you would have made by hand:
+  direct, with nobody in the middle. It maps the telnet port and, on a board
+  with one, the SSH port, and never the backup window's.
+- **`PORTMAP`** (sysop) says which protocol answered, your router's outside
+  address and whether that address is on the internet at all, the outside
+  port each of your ports got, what is left of the lease, and the reason in a
+  sentence when nothing came of it. **`PORTMAP NOW`** asks again rather than
+  waiting out the hour, which is what to press after switching the feature on
+  in the router's menu. The one-line version is on `SYS` and on CONFIG
+  network.
+- It says **mapped**, never **reachable**. A router granting a mapping proves
+  only that it did as it was asked; whether a packet from outside arrives
+  needs somebody outside to try.
+- **It does nothing behind carrier-grade NAT**, and says so plainly rather
+  than claiming to be reachable. That is worth having anyway: reading your
+  router's own outside address back is the cheapest way to find out you are
+  behind one.
+- A router that will only make a mapping that never expires is given one and
+  shown as `Lease none`. **That mapping stays in the router until you switch
+  the setting off while the board is running**, so a board unplugged for good
+  leaves a forward behind, exactly as a hand-made forward would. A lease is
+  always asked for first, so it only happens on a router that refuses leases.
+- `ANNOUNCE` publishes the outside port the router actually granted, where
+  before it published the port the board listens on. On a router that had the
+  number taken and gave out a different one, the listening port was the one
+  number certainly wrong. Your own "Outside port" still wins when you have
+  typed one, and `ANNOUNCE` now shows which of the three the directory was
+  told and where it came from.
+
+### Ten SSH lines
+
+- **Up to 10 SSH callers at once on every S3 board**, where it was 8. That is
+  every caller line, so SSH is no longer a narrower door than telnet. It
+  costs no memory that was not already there: the board has always worked its
+  own ceiling out from the PSRAM free at the moment somebody connects, so the
+  figure could never run a board out of memory, only have a connection
+  refused.
+- **`ssh_lines`** (CONFIG network) lowers it, for a sysop who wants the PSRAM
+  for something else. 1 to 10, and `0` means the board's own figure. It
+  cannot turn SSH off; `ssh_port`'s `0` turns off SSH's second port only.
+  It is **live**: lowering it stops the next SSH caller and leaves the
+  callers already on alone, because cutting somebody off to make a number
+  true is a worse answer than letting it come true as they leave.
+- A **file** asking for more than the board takes has that one line lowered
+  and said on the console, not refused. The same `system.cfg` can be in range
+  on one board and out of range on another, and refusing it would throw away
+  the network, the passwords and every plugin section over one number whose
+  safe meaning is obvious. CONFIG still refuses a number out of range, so the
+  sysop who typed it is told.
+
+### Two ban-table fixes
+
+Both were reachable in ordinary abuse on a board whose address is published
+in the directory, and both failed in the wrong direction.
+
+- **A full ban table could lift a ban that was still running.** With all
+  eight slots carrying active bans, a ninth address earning one silently
+  reset slot 0 and unbanned it. That is 27 wrong passwords from nine
+  addresses inside one fifteen-minute window: ordinary abuse, not a
+  contrivance. The table refuses now. The ninth ban is not recorded, that
+  caller is dropped as they were anyway, and eight real bans keep standing
+  rather than one being traded for a ninth. `BANS` says `Bans - table full`
+  in its title, and the console says it at most once a ban window. Raising
+  the number of slots would have made it rarer without closing it, which is
+  why that was not the fix.
+- **A ban nobody came back for came back by itself after 24.86 days.** The
+  end of a ban is a deadline read as a signed difference, which is sound only
+  while an expired one is retired to zero, and that only happened for the one
+  address being asked about. So a banned address that never reconnected left
+  its entry standing for ever, and at 24.86 days of uptime the comparison
+  turned negative again: refused at the door for another 24.86 days, with
+  `BANS` showing it 35,791 minutes left. The likely victim is the sysop's own
+  address after three fat-fingered `BYE`s a month earlier. Every slot is
+  swept now, on every accepted connection, which is the only clock on that
+  table guaranteed to run. **It narrows the hole rather than closing it**: a
+  board that accepts no connection at all for 24.86 days still sees it, and
+  closing it properly means storing when a ban started rather than when it
+  ends, which moves the record's layout and `BANS`'s minutes-left sum.
+- An expired ban is also reclaimed when a new address needs a slot, so a
+  table of dead bans no longer reads as full.
+
+### Every line answers to its own number
+
+- **`0` is the sysop line and `11` the busy line**, wherever a node is an
+  argument: `PAGE`, `TIME`, `KICK` and `SNOOP` all take them. `S` and `B`
+  still work and are still what the lists print. `12` and higher is still not
+  a line.
+- The numbers are the ids the board already assigns, so they are contiguous
+  with the callers and there is no gap to fall into. DDial numbered its
+  console 0 and so did GTalk, so a caller who learned on either types a
+  number; the board's own rule is that the number you read in a list is the
+  number you type, and this is the other half of it.
+
+### CONFIG says which plugins are running
+
+- **Each plugin row on CONFIG's page list carries a mark**: nothing when it is
+  running, `-` when it is switched off, and `!` when it is switched on in
+  `system.cfg` and still not running, which means this board cannot run it.
+- The third state is the one worth having. A plugin that keeps its files on
+  the card cannot start without one, and showing that as "off" teaches the
+  wrong thing entirely, that switching it on is all that is wanted.
+- A key under the list explains whichever marks are on show, and is left out
+  when everything is running. It is a character rather than colour alone,
+  because plain ASCII has neither colour nor reverse video, and it has a
+  short form at 40 columns so the one row whose job is to explain the others
+  is not the row that wraps.
+- No row got wider: the mark sits in the space the name column already had in
+  front of it.
+
+### The chat room says when your line is full
+
+- **A room line has a ceiling** (64 characters, or two fewer than your
+  terminal is wide, whichever is smaller) and reaching it used to be silent:
+  the editor swallowed the keystroke and said nothing, so a caller watched
+  their sentence stop growing and read it as the board dropping the end of
+  what they said. Four callers on the bench reported exactly that on one
+  evening, none of them prompted. **The room rings your bell now** when you
+  reach the ceiling, the way a form error, a page and a broadcast all ring;
+  `/b` silences it with the rest. **Once**, not once a refused keystroke:
+  pasting two hundred characters past the ceiling would otherwise be a
+  continuous tone, and the bells would eat the output room that gates that
+  caller's own socket reads, so their typeahead would stall behind their own
+  beeping. Backspacing and carrying on rings again at the new ceiling.
+- **The ceiling has not moved and nothing new is truncated.** Raising it was
+  the obvious fix and the wrong one: the room's ring keeps a tag plus a whole
+  line for each of its 48 lines, allocated when the plugin starts, so a
+  bigger ceiling would spend heap on every line in the room to lift a limit
+  nobody asked to be lifted. And it stays a ceiling rather than becoming a
+  width, so a 40-column caller keeps the shorter line their terminal gives
+  them.
+
 ## 1.2.2-dev.3, 2026-10-05
 
 **The code review of dev.2, and one more bug of the same family it found

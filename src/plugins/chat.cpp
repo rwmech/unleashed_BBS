@@ -368,6 +368,16 @@ uint16_t g_lastSec[kSlots] = {};
 // for the call: they are cleared when the caller drops.
 uint16_t g_squelch[kSlots] = {};               // bit per node whose lines are hidden
 char     g_away[kSlots][kAwayMax + 1] = {};    // away note, empty when here
+// The line-full bell has already rung for this line (1.2.2). One bell a
+// time the caller reaches the ceiling, not one a refused keystroke: typing
+// ahead or pasting 200 characters past a 64 character line was a
+// continuous tone, and the bells also eat the timeline room that
+// BBS_RX_ROOM gates that caller's own socket reads on, so their typeahead
+// stalled behind their own beeping. Every other "no" on this board says it
+// once (inputError flashes once, a form error rings once, a page rings
+// once). Cleared by any key the editor does take, so backspacing and
+// carrying on rings again at the new ceiling.
+bool     g_fullRang[kSlots] = {};
 
 // Sticky private: every ordinary line goes to this node until /p* ends it.
 // 0xFF is off. DDial had /Pn* for the same reason it is wanted here: "/p 3 "
@@ -3262,7 +3272,40 @@ void onKey(Session& s, int k, uint32_t now) {
     if (g_mailMode[slot] == MM_BOX)    { mailBoxKey(s, k);   return; }
     if (g_mailMode[slot] == MM_TO)     { mailToKey(s, k);    return; }
 
+    // The room's line has a ceiling: armInput arms the editor at the
+    // terminal's width less two or kLineMax, whichever is smaller, and the
+    // editor holds it by swallowing the keystroke, which says nothing at
+    // all. A caller typing past it sees their sentence simply stop growing
+    // and reads it as the board having dropped the end of their line, which
+    // is how the ceiling came back from the bench as room traffic "losing
+    // its tail mid-word", from four callers and none of them prompted.
+    //
+    // So the room says the line is full, the way the board says no
+    // everywhere else: a bell, as a form error, a page and a broadcast all
+    // ring. Nothing is truncated anywhere new and no limit moved.
+    //
+    // kLineMax is deliberately NOT raised to meet BBS_LINE_MAX. The ring
+    // keeps kTagMax + 1 + kLineMax per line and `history` lines of it are
+    // allocated at plugin start, so a bigger ceiling spends heap on every
+    // line of the room to lift a limit nobody asked to be lifted. And the
+    // ceiling stays a ceiling rather than becoming a width: armInput's
+    // min() is untouched, so a 40 column caller keeps the shorter line the
+    // terminal gives them and a wide one gains nothing.
+    //
+    // Session::bellOff is read here rather than folded into the editor's
+    // flags at arm time, so /b takes effect on the next keystroke instead
+    // of the next line.
+    // One bell a time the ceiling is reached, latched in g_fullRang: see
+    // its declaration for why a bell per refused key was wrong.
+    const bool wasFull = s.ed.active() && s.ed.len() >= s.ed.cap();
+    const bool refused = wasFull && k >= 0x20 && k <= 0x7E;
     LineEditor::Res r = s.ed.key(k, s.term, s.tl);
+    if (!refused) {
+        g_fullRang[slot] = false;
+    } else if (!g_fullRang[slot]) {
+        g_fullRang[slot] = true;
+        if (!s.bellOff) s.term.bell(s.tl);
+    }
     if (r == LineEditor::Res::Abort) {
         // ESC rubs out the half-typed line; it does NOT leave the room.
         // Rob: "The escape key exits chat, that should not do that. If
@@ -3393,6 +3436,7 @@ void onLogoff(Session& s) {
     mailForget(slot);
     g_squelch[slot] = 0;
     g_away[slot][0] = '\0';
+    g_fullRang[slot] = false;               // nor a latched line-full bell (1.2.2)
     g_answered[slot] = 0xFF;                // nobody inherits a way past the room's write level
     g_sticky[slot]   = 0xFF;                // nor a private conversation (1.1.1)
     for (uint8_t i = 0; i < kSlots; ++i)                    // nobody inherits a squelch

@@ -44,6 +44,8 @@ There is no prompt character. The cursor sits at the start of the line, and what
 
 Nothing is dropped. The room keeps a buffer (48 lines by default) and a caller who joins sees the last few lines of it, dimmed. If somebody types for long enough that the held lines are close to filling the buffer, their own line is lifted off the screen, the room prints underneath, and their line is put back so they can carry on.
 
+**A line has a ceiling: 64 characters, or two fewer than your terminal is wide, whichever is smaller.** From 1.2.2 the room rings your bell once when you reach it, so you can see where the sentence has to end instead of finding out afterwards. Once and not once a keystroke, because pasting a long line past the ceiling would otherwise be a continuous tone; backspace and carry on and it rings again at the new ceiling. Before that the keys were simply swallowed in silence, and callers read it as the board dropping the tail of what they said: four of them reported it on the same evening. The ceiling itself has not moved, and `/b` silences the bell along with the others.
+
 Callers are rate limited: eight lines in a burst, then 80 lines a minute, which is faster than anyone types. Only the caller who trips it is told; the room never sees the message.
 
 ## Room commands
