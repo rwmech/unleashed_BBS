@@ -1975,9 +1975,17 @@ this tree.
       drop it, delay it, or watch who talks to whom. This is the one part
       of the design that must be settled before any code.
     - **The board does not route** (Rule no. 1): sats are the routers and
-      the board is a destination, which is also the fan-out answer to "a
-      few dozen", since the board then holds one pairing rather than
-      thirty and `kPeers = 8` stops being the wall.
+      the board is a destination.
+    - **"The board then holds one pairing rather than thirty" was WRONG,
+      and the spec corrected it** (`internal/spec-mesh-2026-10-09.md` §5.1).
+      I wrote it here on 2026-10-05 and repeated it on 2026-10-09, and it
+      does not survive the key design: because frames stay sealed end to
+      end, the board holds a key for **every** sat behind every repeater,
+      so pairings go UP, not down (32 when the mesh is on, heap rather than
+      static DRAM). What stops being the wall is the **ESP-NOW peer table
+      of 20**, because a far sat is never a radio peer of the board at all.
+      The error came from reasoning about the relay as if it terminated
+      sessions, which is exactly the thing this design forbids.
     - **Watch the peer table, not just the pairings.** ESP-NOW's own
       `ESP_NOW_MAX_TOTAL_PEER_NUM` is what bounds how many neighbours one
       node may hold, and a mesh node needs a neighbour for every box it
