@@ -1941,6 +1941,58 @@ this tree.
       never from a tick, forbid a repeater from terminating a session, and
       have each node say where a frame died, because debugging a three-hop
       chain at a fairground with no console is otherwise a bad evening.
+  - **SETTLED 2026-10-09 (Rob), and it overrides "the shape proposed"
+    above on both counts: a full self-healing mesh, written as our own over
+    the link we already have.** Offered the cheaper middle (routes that CAN
+    change but are planned by hand, about 2 weeks) and the one-hop relay as
+    costed, he took the 3-to-5-week version; offered ESP-MESH-LITE as a
+    framework that exists, he took our own over ESP-NOW and the existing
+    AES-128-CCM frames. So nodes discover each other, choose paths and
+    repair around a dead box, and we own the routing.
+    - **What the choice buys and what it costs, so neither is a surprise
+      later.** Repair is the point and repair is most of the work:
+      forwarding a sealed frame is the cheap fifth of it, and discovery,
+      routing, loop control and path repair are the rest. The accepted
+      downside, named before he chose: **a self-healing mesh can reroute a
+      caller's session onto a longer path mid-call**, which is the worst
+      thing that can happen to keystroke echo, where a camera would not
+      care.
+    - **Every hop is still on the board's router channel, and no mesh
+      fixes that.** Zigbee spreads hops across channels and ESP-NOW cannot,
+      so reach goes up and capacity goes down however clever the routing
+      is. Shared air is physics, not a protocol shortcoming, and the
+      published page already says it ("a chain reaches further and carries
+      less"). Do not let "mesh" be read as "more capacity".
+    - **The new requirement our own routing creates, which neither the
+      one-hop relay nor a hand-planted chain had: route messages have to be
+      authenticated.** A payload stays sealed end to end, so a repeater
+      still cannot read it, but routing metadata lives OUTSIDE that
+      envelope by construction, and in a self-healing mesh the NETWORK
+      chooses the path where an operator used to. So anything in radio
+      range can advertise itself as a good next hop and pull traffic
+      through itself unless route advertisements carry something a
+      stranger cannot forge. It cannot read what it attracts, but it can
+      drop it, delay it, or watch who talks to whom. This is the one part
+      of the design that must be settled before any code.
+    - **The board does not route** (Rule no. 1): sats are the routers and
+      the board is a destination, which is also the fan-out answer to "a
+      few dozen", since the board then holds one pairing rather than
+      thirty and `kPeers = 8` stops being the wall.
+    - **Watch the peer table, not just the pairings.** ESP-NOW's own
+      `ESP_NOW_MAX_TOTAL_PEER_NUM` is what bounds how many neighbours one
+      node may hold, and a mesh node needs a neighbour for every box it
+      can hear, not just the ones it is paired with. Check the figure in
+      5.3.1's headers before the spec fixes a fan-out.
+    - **Next step is a spec, not code**, the way LINK.md was written before
+      the link: the frame wrapper, the neighbour table, how a route is
+      advertised and authenticated, loop control, how a dead node is
+      noticed and how long repair takes, and what a reroute does to a
+      session in flight. Nothing is built until Rob has read it.
+    - **The published page is now wrong about this.** `/satellites/repeater`
+      (site 1.6.10) says "chain" nine times and "mesh" never, and describes
+      hand-planted boxes with fixed routes, which was accurate when it was
+      written this morning and is not accurate now. It has to be rewritten
+      to describe a mesh, keeping its own rule that nothing of it is built.
 - **The words are settled (Rob, 2026-10-05), and the spec is
   `internal/spec-callin-node-2026-10-05.md`.** One device with roles, as Rob
   corrected it, not two boxes:
