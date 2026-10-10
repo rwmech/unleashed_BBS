@@ -3838,6 +3838,77 @@ this tree.
       a board being flashed, erased and rebooted all afternoon, with a new
       access point in the room. An intermittent fault and a disturbed board
       make poor evidence together, and most of the disturbance was mine.
+  - **REOPENED AND LARGELY SOLVED, 2026-10-09. It is accumulated state
+    outside the heap, almost certainly lwIP's static pools, and a reboot is
+    the only thing that clears it.** Rob's original instinct ("some memory
+    leak") was right and I argued him out of it twice.
+    - **Measured on HQ (the 4.3B, 1.2.2-dev.3, publicly listed on port
+      6415, LAN address .99).** Keystroke echo, the same probe before and
+      after a reboot: **median 474.6 ms, p95 2,400 ms, 35 of 49 keystrokes
+      over 100 ms**, then after the reboot **median 14.0 ms, p95 68 ms, 1 of
+      40**. ICMP told the same story: 4-8% loss and a 3.5 s worst before, 0%
+      loss after.
+    - **ICMP is the instrument that cracked it, as it did in 0.18.0.** It is
+      answered by lwIP on core 0 and never touches the BBS loop, so a fault
+      visible in ping with nobody on the board is below the application.
+      **But the inference I drew from that was wrong**: it rules out the
+      LOOP, not the BBS. State the BBS leaks into the network stack sits
+      exactly in that blind spot, and I used "ICMP is core 0" to talk Rob
+      out of the leak theory for several hours.
+    - **It is NOT the heap, and that is measured, not argued: 56,019 bytes
+      free at 6h11m uptime against 56,039 at 23 minutes.** Six hours cost
+      twenty bytes. So the thing that accumulates is invisible to every
+      figure SYS prints, which is why six hours of the board's own telemetry
+      looked perfect while it was crawling.
+    - **So the suspect is lwIP's static pools** (pbufs, PCBs, netconns):
+      fixed arrays, not heap allocations, so a leak there shows in neither
+      `Heap free` nor `Heap low`; exhausting them drops and delays packets
+      on core 0 while the loop on core 1 reports zero slow passes; and only
+      a reboot clears them. Every observed symptom follows from that and
+      from nothing else that survived testing.
+    - **Why HQ and not the others, which is the strongest clue for whoever
+      picks this up.** The Guition (G4848, 1.2.0) had been up for days on
+      the same channel in the same room and answered in 1-11 ms with zero
+      loss; the Freenove (1.1.2-dev.5) likewise at 3 ms. **HQ is the only
+      board that is port-forwarded, publicly listed and announcing**, so it
+      is the only one seeing failed connections from the internet, and its
+      own SYS read `Directory online 41 sent 8 failed`. **A leak on a
+      FAILURE path only accumulates where failures happen.** Start at
+      announce's refused-POST branch and the SSH listener's refusal path,
+      looking for a socket or pbuf freed on success and not on error.
+    - **Four theories died on the way, each by a measurement, and they are
+      written down so nobody spends the afternoon on them again:**
+      - *Wi-Fi power save* (the 0.18.0 and 0.21.1 bug): SYS says `awake`,
+        and the latency spread is a smooth tail rather than a cluster on a
+        round number. This file's own discriminator settled it.
+      - *RF or the channel*: two other ESP32s on the same channel in the
+        same room were clean throughout. And the correlation is INVERTED:
+        the board read **-38 dBm "excellent" while crawling** and **-75 to
+        -78 dBm "weak" while fast**. Signal strength is not the variable.
+      - *The 4.3B's RGB panel* (its bounce-buffer refill interrupt, where
+        the Guition has a full framebuffer and no interrupt at all). It was
+        the best structural story and the reboot killed it: the panel runs
+        identically after a reboot.
+      - *The SSH task on core 0* (1.2.2 raised `BBS_SSH_MAX` 8 to 10 and
+        reworked its throttles). Two handshakes held open moved nothing
+        beyond noise, the board was slow with the task idle, and a reboot
+        fixes it.
+    - **Running now: a 4-hour watch from the clean boot**, 17 samples at 15
+      minutes, logging ping and SYS to `notes/hq-leak-watch-2026-10-09.log`
+      and `.csv`, summarised by `/tmp/hqsum.py`. The question it answers:
+      does ping rot while heap stays at 56 KB. If it does, the pools are
+      confirmed and the allocator is cleared.
+    - **A `cfgtest` account exists on HQ** (created 2026-10-09 with Rob's
+      go) so the watch can read SYS. Registering it took seven attempts, and
+      the reason is worth keeping: **`Would you like to know more? [Y/N]` is
+      a single-key prompt, so sending `N\r` delivers a stray Enter that
+      submits the next field empty**, and everything after is shifted by
+      one. Also `L("Again", "Password again")` means the confirmation field
+      is labelled `Again:` at narrow widths. Any future script that drives
+      the sign-up form needs both.
+    - **Still unexplained, and separate:** `Loop worst 107,186 us` with 3
+      slow passes at 30 minutes on an idle board. A 107 ms pass is twice
+      Rule no. 1's threshold and nothing was using the board.
   - **Three bugs the four-caller chat test found**, 2026-10-06, all queued:
     - **Every chat line is silently cut at 64 characters.** All four callers
       hit it; one measured **38% of all room traffic losing its tail**,
